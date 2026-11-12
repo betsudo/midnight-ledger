@@ -32,6 +32,8 @@ use ledger::structure::{
     Signature, Transaction,
 };
 use midnight_proofs::config::ProverContext;
+#[cfg(feature = "zkir3-context")]
+use midnight_proofs::config::{CancelToken, ProverConfig};
 use rand::rngs::OsRng;
 use serialize::{tagged_deserialize, tagged_serialize};
 use std::borrow::Cow;
@@ -59,6 +61,19 @@ lazy_static! {
         )
         .expect("data provider initialization failed")
     );
+}
+
+/// Keeps a running v3 proof tied to the lifetime of its HTTP handler.
+/// Dropping the handler signals only this request's proof; the blocking worker
+/// observes the token at its next proving or key-build checkpoint.
+#[cfg(feature = "zkir3-context")]
+struct CancelOnDrop(CancelToken);
+
+#[cfg(feature = "zkir3-context")]
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
 }
 
 async fn payload_to_bytes(
@@ -303,7 +318,6 @@ pub(crate) async fn check(
         .await?;
     drop(permit);
     let response = JobStatus::wait_for_success(&updates).await?;
-
     Ok(HttpResponse::Ok().body(response))
 }
 
@@ -326,6 +340,10 @@ pub(crate) async fn prove(
 
     let data = data.map(Arc::new);
     let data_resolver = data.clone();
+    #[cfg(feature = "zkir3-context")]
+    let cancel_on_drop = CancelOnDrop(CancelToken::new());
+    #[cfg(feature = "zkir3-context")]
+    let proof_cancel = cancel_on_drop.0.clone();
     let (_id, updates) = pool
         .submit_and_subscribe(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
@@ -372,6 +390,10 @@ pub(crate) async fn prove(
                             ),
                         };
 
+                        #[cfg(feature = "zkir3-context")]
+                        let context = ProverContext::new(ProverConfig::process().clone())
+                            .with_cancel(proof_cancel);
+                        #[cfg(not(feature = "zkir3-context"))]
                         let context = ProverContext::process();
                         let proof =
                             versioned_ir::prove(ppi, &proving_data.ir_source, &resolver, &context)
@@ -393,6 +415,8 @@ pub(crate) async fn prove(
         .await?;
     drop(permit);
     let response = JobStatus::wait_for_success(&updates).await?;
+    #[cfg(feature = "zkir3-context")]
+    drop(cancel_on_drop);
 
     Ok(HttpResponse::Ok().body(response))
 }
@@ -452,4 +476,35 @@ pub(crate) async fn prove_transaction(
     drop(permit);
     let response = JobStatus::wait_for_success(&updates).await?;
     Ok(HttpResponse::Ok().body(response))
+}
+
+#[cfg(all(test, feature = "zkir3-context"))]
+mod context_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn dropped_request_cancels_only_its_proof_token() {
+        let abandoned = CancelOnDrop(CancelToken::new());
+        let abandoned_proof = abandoned.0.clone();
+        let live = CancelOnDrop(CancelToken::new());
+        let live_proof = live.0.clone();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let handler = tokio::spawn(async move {
+            let _guard = abandoned;
+            started_tx.send(()).expect("signal handler start");
+            std::future::pending::<()>().await;
+        });
+        started_rx.await.expect("handler started");
+        handler.abort();
+        assert!(
+            handler
+                .await
+                .expect_err("handler was aborted")
+                .is_cancelled()
+        );
+
+        assert!(abandoned_proof.is_cancelled());
+        assert!(!live_proof.is_cancelled());
+        drop(live);
+    }
 }
