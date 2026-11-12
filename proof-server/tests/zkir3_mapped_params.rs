@@ -15,6 +15,8 @@ use midnight_proofs::utils::SerdeFormat;
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use serialize::tagged_serialize;
+use transient_crypto::curve::Fr;
+use transient_crypto::hash::transient_commit;
 use transient_crypto::proofs::{
     CompanionCache, KeyLocation, MappedParams, ParamsProver, ParamsProverProvider, ParamsVerifier,
     ProofPreimage, ProverKey, ProvingKeyMaterial, Resolver, TrustedParamsDir, VerifierKey, Zkir,
@@ -71,6 +73,37 @@ async fn zkir3_heap_and_mapped_params_produce_the_same_valid_proof() {
         }"#[..],
     )
     .expect("load v3 IR");
+    exercise_heap_and_mapped(ir, vec![1.into()], None, vec![]).await;
+}
+
+#[actix_web::test]
+async fn compact_generated_zkir3_counter_uses_the_same_prover_paths() {
+    // Compact 0.36.1 (7fa3a117c) emitted this ZKIR 3.1 circuit from the
+    // adjacent counter.compact source with --skip-zk. It exercises an actual
+    // Ledger9 impact and communications-commitment path.
+    let ir = IrSource::load(include_str!("compact-v3-counter/increment.zkir").as_bytes())
+        .expect("load Compact-generated v3 IR");
+    let opening: Fr = 7.into();
+    let commitment = transient_commit(&[] as &[Fr], opening);
+    let public_transcript_inputs = [0x70, 0x01, 0x01, 0x00, 0x0e, 0x01, 0xa1]
+        .into_iter()
+        .map(Fr::from)
+        .collect();
+    exercise_heap_and_mapped(
+        ir,
+        vec![],
+        Some((commitment, opening)),
+        public_transcript_inputs,
+    )
+    .await;
+}
+
+async fn exercise_heap_and_mapped(
+    ir: IrSource,
+    inputs: Vec<Fr>,
+    communications_commitment: Option<(Fr, Fr)>,
+    public_transcript_inputs: Vec<Fr>,
+) {
     let k = ir.k();
     if std::env::var("MIDNIGHT_SPILL_COSETS").as_deref() == Ok("1") {
         assert!(
@@ -98,21 +131,26 @@ async fn zkir3_heap_and_mapped_params_produce_the_same_valid_proof() {
     };
     let preimage = ProofPreimage {
         binding_input: 42.into(),
-        communications_commitment: None,
-        inputs: vec![1.into()],
+        communications_commitment,
+        inputs,
         private_transcript: vec![],
-        public_transcript_inputs: vec![],
+        public_transcript_inputs,
         public_transcript_outputs: vec![],
         key_location: KeyLocation(Cow::Borrowed("test")),
     };
     let rng = || ChaCha20Rng::from_seed([42; 32]);
+    let mut public_inputs = vec![42.into()];
+    if let Some((commitment, _)) = communications_commitment {
+        public_inputs.push(commitment);
+    }
+    public_inputs.extend(preimage.public_transcript_inputs.iter().copied());
     let (heap_proof, _) = preimage
         .prove::<IrSource>(rng(), &heap, &resolver)
         .await
         .expect("heap proof");
     resolver
         .vk
-        .verify(&verifier_params, &heap_proof, [42.into()].into_iter())
+        .verify(&verifier_params, &heap_proof, public_inputs.iter().copied())
         .expect("verify heap proof");
 
     let dir = tempfile::tempdir().expect("private companion dir");
@@ -131,7 +169,7 @@ async fn zkir3_heap_and_mapped_params_produce_the_same_valid_proof() {
         .expect("mapped proof");
     resolver
         .vk
-        .verify(&verifier_params, &mapped_proof, [42.into()].into_iter())
+        .verify(&verifier_params, &mapped_proof, public_inputs.into_iter())
         .expect("verify mapped proof");
     assert_eq!(heap_proof, mapped_proof);
 }
