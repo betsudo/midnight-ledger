@@ -11,12 +11,14 @@ use base_crypto::data_provider::MidnightDataProvider;
 use ledger::structure::{ProofPreimageVersioned, ProofVersioned};
 use midnight_curves::Bls12;
 use midnight_proof_server::{server, worker_pool::WorkerPool};
+use midnight_proofs::config::ProverConfig;
 use midnight_proofs::poly::kzg::params::ParamsKZG;
 use midnight_proofs::utils::SerdeFormat;
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use serialize::{tagged_deserialize, tagged_serialize};
 use transient_crypto::curve::Fr;
+use transient_crypto::hash::transient_commit;
 use transient_crypto::proofs::{
     CompanionCache, KeyLocation, ParamsProver, ParamsProverProvider, ParamsVerifier, ProofPreimage,
     ProvingKeyMaterial, TrustedParamsDir, Zkir,
@@ -34,17 +36,17 @@ impl ParamsProverProvider for HeapParams {
 
 #[actix_web::test]
 async fn prove_endpoint_accepts_v3_with_mapped_params() {
-    let ir = IrSource::load(
-        &br#"{
-            "version": { "major": 3, "minor": 0 },
-            "inputs": [{ "name": "%v_0", "type": "Scalar<BLS12-381>" }],
-            "outputs": [],
-            "do_communications_commitment": false,
-            "instructions": [{ "op": "assert", "cond": "%v_0" }]
-        }"#[..],
-    )
-    .expect("load v3 IR");
+    // Compact 0.36.1 (7fa3a117c) generated this ZKIR 3.1 circuit. It uses
+    // the communications commitment and impact transcript required by Ledger9.
+    let ir = IrSource::load(include_str!("compact-v3-counter/increment.zkir").as_bytes())
+        .expect("load Compact-generated v3 IR");
     let k = ir.k();
+    if std::env::var("MIDNIGHT_SPILL_COSETS").as_deref() == Ok("1") {
+        assert!(
+            ProverConfig::process().spills_cosets_at(k as u32),
+            "forced-spill run must select this circuit's k"
+        );
+    }
     let params = ParamsProver(Arc::new(ParamsKZG::<Bls12>::unsafe_setup(
         k as u32,
         ChaCha20Rng::from_seed([7; 32]),
@@ -81,12 +83,18 @@ async fn prove_endpoint_accepts_v3_with_mapped_params() {
         verifier_key,
         ir_source,
     };
+    let opening: Fr = 7.into();
+    let commitment = transient_commit(&[] as &[Fr], opening);
+    let public_transcript_inputs: Vec<Fr> = [0x70, 0x01, 0x01, 0x00, 0x0e, 0x01, 0xa1]
+        .into_iter()
+        .map(Fr::from)
+        .collect();
     let preimage = ProofPreimage {
         binding_input: 42.into(),
-        communications_commitment: None,
-        inputs: vec![1.into()],
+        communications_commitment: Some((commitment, opening)),
+        inputs: vec![],
         private_transcript: vec![],
-        public_transcript_inputs: vec![],
+        public_transcript_inputs: public_transcript_inputs.clone(),
         public_transcript_outputs: vec![],
         key_location: KeyLocation(Cow::Borrowed("test")),
     };
@@ -130,6 +138,8 @@ async fn prove_endpoint_accepts_v3_with_mapped_params() {
     let ProofVersioned::V2(proof) = proof else {
         panic!("unexpected proof version");
     };
-    vk.verify(&verifier_params, &proof, [42.into()].into_iter())
+    let mut public_inputs = vec![42.into(), commitment];
+    public_inputs.extend(public_transcript_inputs);
+    vk.verify(&verifier_params, &proof, public_inputs.into_iter())
         .expect("verify HTTP proof");
 }
