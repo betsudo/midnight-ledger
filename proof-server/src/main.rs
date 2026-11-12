@@ -26,7 +26,11 @@ use tracing_subscriber::filter::Targets;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{Layer, Registry};
+#[cfg(not(target_family = "wasm"))]
+use transient_crypto::proofs::TrustedParamsDir;
 use transient_crypto::proofs::{KeyLocation, Resolver as ResolverT};
+#[cfg(not(target_family = "wasm"))]
+use zswap::prove::ZswapResolver;
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -55,12 +59,49 @@ struct Args {
         env = "MIDNIGHT_PROOF_SERVER_NO_FETCH_PARAMS"
     )]
     no_fetch_params: bool,
+    /// Private, immutable mmap companion directory. Published files must not
+    /// be changed by another process while this server is running.
+    #[cfg(not(target_family = "wasm"))]
+    #[arg(long, env = "MIDNIGHT_PROOF_SERVER_TRUSTED_MMAP_DIR")]
+    trusted_mmap_dir: Option<std::path::PathBuf>,
 }
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     let args = Args::parse();
     init_logging(args.verbose);
+    #[cfg(not(target_family = "wasm"))]
+    if let Some(dir) = args.trusted_mmap_dir.as_deref() {
+        let canonical = std::fs::canonicalize(dir)?;
+        let metadata = std::fs::metadata(&canonical)?;
+        if !metadata.is_dir() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "trusted mmap path must be a directory",
+            ));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if metadata.permissions().mode() & 0o077 != 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "trusted mmap directory must be private (mode 0700)",
+                ));
+            }
+        }
+        // SAFETY: this is an explicit operator-selected private directory.
+        // The server publishes companions only through CompanionCache, which
+        // never rewrites a published inode. The operator must keep other
+        // processes from modifying files here while mappings are alive.
+        let trusted = unsafe { TrustedParamsDir::new(canonical) };
+        ZswapResolver::configure_mapped_params_dir(trusted).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "trusted mmap directory was already configured",
+            )
+        })?;
+    }
     if !args.no_fetch_params {
         info!("Ensuring zswap key material is available...");
         let resolver = Resolver::new(
