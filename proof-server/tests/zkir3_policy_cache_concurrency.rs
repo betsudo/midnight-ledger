@@ -44,11 +44,11 @@ async fn simultaneous_explicit_key_requests_share_one_build() {
     let dir = tempfile::tempdir().expect("private mapped-key directory");
     let mut policy = ProverConfig::mapped_key();
     policy.spill_dir = Some(dir.path().to_path_buf());
+    let key: ProverKey<IrSource> =
+        tagged_deserialize(io::Cursor::new(&bytes)).expect("deserialize shared lazy key");
     let barrier = Barrier::new(3);
     let (first, second) = std::thread::scope(|scope| {
         let load = || {
-            let key: ProverKey<IrSource> =
-                tagged_deserialize(io::Cursor::new(&bytes)).expect("deserialize lazy key");
             barrier.wait();
             key.init_with_policy(&policy).expect("load mapped key")
         };
@@ -61,4 +61,10 @@ async fn simultaneous_explicit_key_requests_share_one_build() {
         )
     });
     assert!(Arc::ptr_eq(&first, &second));
+    let another_key: ProverKey<IrSource> =
+        tagged_deserialize(io::Cursor::new(&bytes)).expect("deserialize another lazy key");
+    let third = another_key
+        .init_with_policy(&policy)
+        .expect("reuse key across lazy objects");
+    assert!(Arc::ptr_eq(&first, &third));
 }

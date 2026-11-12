@@ -867,14 +867,16 @@ impl<T: Zkir> Distribution<ProverKey<T>> for Standard {
         let size: u8 = rng.gen_range(0..32);
         let mut bytes = Vec::with_bounded_capacity(size as usize);
         rng.fill_bytes(&mut bytes);
-        ProverKey(Arc::new(Mutex::new(InnerProverKey::Uninitialized(bytes))))
+        ProverKey(Arc::new(Mutex::new(InnerProverKey::Uninitialized(
+            Arc::new(bytes),
+        ))))
     }
 }
 
 #[derive(Debug, Clone)]
 pub(crate) enum InnerProverKey<T: Zkir> {
-    Uninitialized(Vec<u8>),
-    Invalid(Vec<u8>),
+    Uninitialized(Arc<Vec<u8>>),
+    Invalid(Arc<Vec<u8>>),
     Initialized(Arc<T::ProverKey>),
 }
 
@@ -934,18 +936,20 @@ fn check_key_cancelled(
     }
 }
 
-fn lock_policy_build_gate<'a>(
-    gate: &'a Mutex<()>,
+fn lock_with_context<'a, T>(
+    gate: &'a Mutex<T>,
     context: Option<&ProverContext>,
-) -> Result<MutexGuard<'a, ()>, ProvingError> {
+    phase: &'static str,
+) -> Result<MutexGuard<'a, T>, ProvingError> {
     if context.is_none() {
-        // The gate carries no data; a previous builder's panic cannot corrupt it.
+        // Preserve the blocking lock for policy-only callers. The global
+        // gate has no data, and callers inspect the per-key enum after lock.
         return Ok(gate
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner));
     }
     loop {
-        check_key_cancelled(context, "prover_key.wait")?;
+        check_key_cancelled(context, phase)?;
         match gate.try_lock() {
             Ok(guard) => return Ok(guard),
             Err(TryLockError::Poisoned(poison)) => return Ok(poison.into_inner()),
@@ -970,7 +974,7 @@ mod key_build_gate_tests {
         let waiting_gate = gate.clone();
         let waiter = std::thread::spawn(move || {
             started_tx.send(()).expect("announce waiter");
-            lock_policy_build_gate(&waiting_gate, Some(&context)).map(|_| ())
+            lock_with_context(&waiting_gate, Some(&context), "prover_key.wait").map(|_| ())
         });
         started_rx.recv().expect("waiter started");
         std::thread::sleep(Duration::from_millis(25));
@@ -988,6 +992,35 @@ mod key_build_gate_tests {
         assert!(gate.try_lock().is_err(), "active builder still owns gate");
         drop(active);
         assert!(gate.try_lock().is_ok(), "admission remains reusable");
+    }
+
+    #[test]
+    fn per_key_lock_wait_is_cancellable() {
+        let key_mutex = Arc::new(Mutex::new(vec![1u8]));
+        let active = key_mutex.lock().expect("hold key lock");
+        let token = CancelToken::new();
+        let context = ProverContext::new(ProverConfig::heap()).with_cancel(token.clone());
+        let (started_tx, started_rx) = mpsc::channel();
+        let waiting_mutex = key_mutex.clone();
+        let waiter = std::thread::spawn(move || {
+            started_tx.send(()).expect("announce waiter");
+            lock_with_context(&waiting_mutex, Some(&context), "prover_key.lock").map(|_| ())
+        });
+        started_rx.recv().expect("waiter started");
+        std::thread::sleep(Duration::from_millis(25));
+        token.cancel();
+        let error = waiter
+            .join()
+            .expect("waiter thread")
+            .expect_err("cancelled waiter must leave the key lock queue");
+        assert!(matches!(
+            error.downcast_ref::<midnight_proofs::plonk::Error>(),
+            Some(midnight_proofs::plonk::Error::Cancelled {
+                phase: "prover_key.lock"
+            })
+        ));
+        drop(active);
+        assert!(key_mutex.try_lock().is_ok(), "key lock remains reusable");
     }
 }
 
@@ -1066,9 +1099,9 @@ impl<T: Zkir> ProverKey<T> {
     }
 
     /// Load a lazy key under this request's memory policy and cancellation token.
-    /// Cancellation is checked while waiting for key-build admission and before
-    /// retaining the completed key. The low-level key reader cannot yet stop
-    /// partway through a single read.
+    /// Cancellation is checked while waiting for key-build admission or the
+    /// per-key lock, and before retaining the completed key. The low-level key
+    /// reader cannot yet stop partway through a single read.
     pub fn init_with_context(
         &self,
         context: &ProverContext,
@@ -1082,16 +1115,21 @@ impl<T: Zkir> ProverKey<T> {
         context: Option<&ProverContext>,
     ) -> Result<Arc<T::ProverKey>, ProvingError> {
         check_key_cancelled(context, "prover_key.init")?;
-        let mutex = self.0.lock().expect("mutex is not poisoned");
-        let data = match &*mutex {
-            InnerProverKey::Uninitialized(data) => data,
-            InnerProverKey::Invalid(_) => {
-                return Err(anyhow::anyhow!("known invalid prover key"));
-            }
-            InnerProverKey::Initialized(_) => {
-                return Err(anyhow::anyhow!(
-                    "explicit memory policy requires a serialized prover key"
-                ));
+        // Snapshot the serialized bytes without copying them. Holding the
+        // per-key mutex across the global build-gate wait would make another
+        // request for this key uninterruptible while the builder is busy.
+        let data = {
+            let mutex = lock_with_context(&self.0, context, "prover_key.lock")?;
+            match &*mutex {
+                InnerProverKey::Uninitialized(data) => data.clone(),
+                InnerProverKey::Invalid(_) => {
+                    return Err(anyhow::anyhow!("known invalid prover key"));
+                }
+                InnerProverKey::Initialized(_) => {
+                    return Err(anyhow::anyhow!(
+                        "explicit memory policy requires a serialized prover key"
+                    ));
+                }
             }
         };
         let hash = persistent_hash(&data[..]);
@@ -1101,7 +1139,7 @@ impl<T: Zkir> ProverKey<T> {
                 return Ok(key);
             }
         }
-        let _build = lock_policy_build_gate(&PK_POLICY_BUILD_LOCK, context)?;
+        let _build = lock_with_context(&PK_POLICY_BUILD_LOCK, context, "prover_key.wait")?;
         check_key_cancelled(context, "prover_key.wait")?;
         // A prior waiter may have populated the cache while this request was
         // waiting at the build gate.
@@ -1111,7 +1149,23 @@ impl<T: Zkir> ProverKey<T> {
                 return Ok(key);
             }
         }
+        // A legacy initializer can change this key's state while we wait at
+        // the global gate. Recheck under the key lock and hold it only for the
+        // reader, preserving the old exclusion with legacy `init()`.
+        let mutex = lock_with_context(&self.0, context, "prover_key.lock")?;
+        match &*mutex {
+            InnerProverKey::Uninitialized(_) => {}
+            InnerProverKey::Invalid(_) => {
+                return Err(anyhow::anyhow!("known invalid prover key"));
+            }
+            InnerProverKey::Initialized(_) => {
+                return Err(anyhow::anyhow!(
+                    "explicit memory policy requires a serialized prover key"
+                ));
+            }
+        }
         let key = Arc::new(T::read_raw_pk_with_policy(&data[..], policy)?);
+        drop(mutex);
         check_key_cancelled(context, "prover_key.read")?;
         if let Ok(mut cache) = PK_POLICY_CACHE.lock() {
             cache.retain(|entry| {
@@ -1237,7 +1291,7 @@ impl<T: Zkir> Deserializable for ProverKey<T> {
         // Keep serialized bytes until `init` selects the process cache or
         // `init_with_policy` selects the request's storage policy.
         Ok(Self(Arc::new(Mutex::new(InnerProverKey::Uninitialized(
-            buf,
+            Arc::new(buf),
         )))))
     }
 }
