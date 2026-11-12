@@ -40,3 +40,35 @@ files use `tempfile_in` and are unlinked immediately, so listing
 `MIDNIGHT_SPILL_DIR` is **not** a spill measurement. This is an observed
 peak for a process that performs setup and both proof arms in sequence;
 it does not isolate heap versus mapped RSS or establish throughput.
+
+The opt-in context route was remeasured locally at Ledger
+`8893f38233fa3b5e2af433496785f2a742a93bd1`, ZKIR
+`ac515dd1a65aa43cca859e3579df35beb3059d2d`, and stdlib
+`b32d4fdcd6d4af32b9f37466f7b799a96020ae65` with the same pinned
+proofs 0.8.2 SHA. On an Apple M2 Max (macOS 26.2, rustc 1.90.0, debug
+profile), the ignored test was built with `--features zkir3-context` and
+the two local Cargo path patches in `docs/ledger9-local-sync.md`, then its
+test binary was run directly with `MIDNIGHT_SPILL_COSETS=1`,
+`MIDNIGHT_SPILL_FLOOR_K=0`, `MIDNIGHT_BENCH_REQUIRE_SPILL=1`, and a private
+`MIDNIGHT_SPILL_DIR`. Three sequential runs produced verified 5,392-byte
+proofs: 7.38/6.11 s, 7.24/6.15 s, and 7.45/6.32 s for
+heap-parameter/mapped-parameter proving respectively. `wait4` measured
+whole-process peaks of 1,037,156,352, 1,046,462,464, and 1,037,090,816
+bytes. The second and third runs sampled `ps` and `lsof -p <pid> -F ns`
+with 20 ms sleeps. Each observed at most 41,943,040 bytes (8 MiB + 32 MiB)
+across **unique named** spill files. Counting duplicate `lsof` entries for
+the same file overstated the first run's spill sample, so that value is
+excluded. The third run used `measure-spill.py`, which also reported
+1,012,784 KiB sampled peak RSS over 163 samples. These are whole-process
+observations including setup and both proving arms. They do not establish
+per-arm peak memory, throughput, or an upper bound on spill files between
+samples.
+
+To repeat the measurement, build the ignored test with `--no-run`,
+`--features zkir3-context`, and the two Cargo path patches from
+`docs/ledger9-local-sync.md`. Pass the printed test executable path to
+`python3 proof-server/tests/compact-v3-hash-chain/measure-spill.py <test-binary>`.
+The script sets the forced-spill variables, creates and removes a private
+spill directory, samples live files by unique name, and prints the test
+result plus a JSON measurement record. Remove the disposable Cargo target
+after recording the run.
