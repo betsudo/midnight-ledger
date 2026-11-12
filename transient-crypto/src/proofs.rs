@@ -22,7 +22,7 @@ use lazy_static::lazy_static;
 use lru::LruCache;
 use midnight_curves::Bls12;
 use midnight_proofs::{
-    config::ProverContext,
+    config::{ProverConfig, ProverContext},
     poly::kzg::params::{ParamsKZG, ParamsVerifierKZG},
     utils::SerdeFormat,
 };
@@ -830,6 +830,17 @@ pub trait Zkir: Any + Send + Sync + Debug + Sized {
 
     /// Reads a raw (untagged) prover key from a byte stream.
     fn read_raw_pk(reader: impl Read) -> io::Result<Self::ProverKey>;
+    /// Read a raw key under an explicit memory policy. Implementations using
+    /// context proving must opt in rather than silently ignoring the policy.
+    fn read_raw_pk_with_policy(
+        _reader: impl Read,
+        _policy: &ProverConfig,
+    ) -> io::Result<Self::ProverKey> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "explicit prover-key memory policy is not supported by this ZKIR",
+        ))
+    }
     /// Writes a raw (untagged) prover key to a byte stream.
     fn write_raw_pk(writer: impl Write, pk: &Self::ProverKey) -> io::Result<()>;
 }
@@ -940,6 +951,31 @@ impl<T: Zkir> ProverKey<T> {
         }
     }
 
+    /// Load a lazy key under the caller's policy without changing this key's
+    /// state or using the bytes-only process cache. A subsequent request with
+    /// another policy must not inherit this request's storage decisions.
+    ///
+    /// This path currently rebuilds the key on each call. Callers should
+    /// initialize it once per proof; policy-aware caching is a separate step.
+    pub fn init_with_policy(
+        &self,
+        policy: &ProverConfig,
+    ) -> Result<Arc<T::ProverKey>, ProvingError> {
+        let mutex = self.0.lock().expect("mutex is not poisoned");
+        let data = match &*mutex {
+            InnerProverKey::Uninitialized(data) => data,
+            InnerProverKey::Invalid(_) => {
+                return Err(anyhow::anyhow!("known invalid prover key"));
+            }
+            InnerProverKey::Initialized(_) => {
+                return Err(anyhow::anyhow!(
+                    "explicit memory policy requires a serialized prover key"
+                ));
+            }
+        };
+        Ok(Arc::new(T::read_raw_pk_with_policy(&data[..], policy)?))
+    }
+
     /// Pre-populate the process-wide `PK_CACHE` so that a subsequent
     /// `tagged_deserialize::<ProverKey<T>>` of bytes produced by
     /// serialising **this** key returns a `ProverKey` sharing the
@@ -1045,9 +1081,11 @@ impl<T: Zkir> Serializable for ProverKey<T> {
 impl<T: Zkir> Deserializable for ProverKey<T> {
     fn deserialize(reader: &mut impl Read, recursion_depth: u32) -> Result<Self, std::io::Error> {
         let buf = <Vec<u8> as Deserializable>::deserialize(reader, recursion_depth)?;
-        let mut pk = InnerProverKey::Uninitialized(buf);
-        pk.try_cache();
-        Ok(Self(Arc::new(Mutex::new(pk))))
+        // Keep serialized bytes until `init` selects the process cache or
+        // `init_with_policy` selects the request's storage policy.
+        Ok(Self(Arc::new(Mutex::new(InnerProverKey::Uninitialized(
+            buf,
+        )))))
     }
 }
 
