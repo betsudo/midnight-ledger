@@ -18,8 +18,8 @@ mod common {
     use std::time::Duration;
 
     use actix_web::{dev::ServerHandle, rt};
-    use midnight_proof_server::server;
     use midnight_proof_server::worker_pool::WorkerPool;
+    use midnight_proof_server::{IngressConfig, server, server_with_ingress_config};
     use reqwest::Client;
 
     pub const DEFAULT_NUM_WORKERS: usize = 2;
@@ -62,6 +62,57 @@ mod common {
 
     pub fn start_server(num_workers: usize, job_limit: usize) -> TestServer {
         start_server_impl(num_workers, job_limit, false)
+    }
+
+    pub fn start_server_with_ingress_limits(config: IngressConfig) -> TestServer {
+        init_logger();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            rt::System::new().block_on(async move {
+                let pool = WorkerPool::new(DEFAULT_NUM_WORKERS, DEFAULT_JOB_LIMIT, 600.0);
+                let (srv, bound_port) = server_with_ingress_config(0, false, pool, config)
+                    .expect("Failed to start server");
+                tx.send((srv.handle(), bound_port))
+                    .expect("Failed to send server handle");
+                srv.await.expect("Server error");
+            });
+        });
+        let (handle, port) = rx.recv().expect("Failed to receive server handle");
+        TestServer { handle, port }
+    }
+
+    pub fn start_server_with_full_queue() -> TestServer {
+        init_logger();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            rt::System::new().block_on(async move {
+                let pool = WorkerPool::new(1, 1, 600.0);
+                let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+                pool.submit(move || {
+                    release_rx.recv().expect("Failed to release worker");
+                    Ok(vec![])
+                })
+                .await
+                .expect("Failed to occupy worker");
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while pool.requests.processing_count().await == 0 {
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .expect("Worker did not start");
+                pool.submit(|| Ok(vec![]))
+                    .await
+                    .expect("Failed to fill queue");
+                let (srv, bound_port) = server(0, false, pool).expect("Failed to start server");
+                tx.send((srv.handle(), bound_port))
+                    .expect("Failed to send server handle");
+                srv.await.expect("Server error");
+                release_tx.send(()).expect("Failed to release worker");
+            });
+        });
+        let (handle, port) = rx.recv().expect("Failed to receive server handle");
+        TestServer { handle, port }
     }
 
     pub fn start_server_with_fetch_params(
@@ -800,8 +851,52 @@ mod check_endpoint {
 mod prove_endpoint {
     use super::common::*;
     use super::test_data::create_zswap_output_proof_preimage;
+    use midnight_proof_server::IngressConfig;
     use serialize::{tagged_deserialize, tagged_serialize};
+    use std::time::Duration;
     use transient_crypto::proofs::ProvingKeyMaterial;
+
+    #[tokio::test]
+    async fn rejects_full_queue_before_decoding_body() {
+        let server = start_server_with_full_queue();
+        let response = HTTP_CLIENT
+            .post(format!("{}/prove", server.base_url()))
+            .body(vec![0u8; 100])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 429);
+        stop_server(server).await;
+    }
+
+    #[tokio::test]
+    async fn rejects_oversized_declared_and_chunked_bodies() {
+        let server = start_server_with_ingress_limits(IngressConfig {
+            max_body_bytes: 32,
+            max_inflight: 1,
+            read_timeout: Duration::from_secs(5),
+        });
+        let url = format!("{}/prove", server.base_url());
+        let response = HTTP_CLIENT
+            .post(&url)
+            .body(vec![0u8; 33])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 413);
+
+        let stream = futures::stream::iter(vec![Ok::<_, std::io::Error>(
+            actix_web::web::Bytes::from(vec![0u8; 33]),
+        )]);
+        let response = HTTP_CLIENT
+            .post(&url)
+            .body(reqwest::Body::wrap_stream(stream))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 413);
+        stop_server(server).await;
+    }
 
     #[tokio::test]
     async fn rejects_empty_body() {

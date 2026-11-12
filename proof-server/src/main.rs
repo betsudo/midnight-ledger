@@ -20,7 +20,7 @@ use futures::future::join;
 use ledger::dust::DustResolver;
 use ledger::prove::Resolver;
 use midnight_proof_server::endpoints::PUBLIC_PARAMS;
-use midnight_proof_server::{server, worker_pool::WorkerPool};
+use midnight_proof_server::{IngressConfig, server_with_ingress_config, worker_pool::WorkerPool};
 use tracing::{Level, info};
 use tracing_subscriber::filter::Targets;
 use tracing_subscriber::layer::SubscriberExt;
@@ -53,6 +53,18 @@ struct Args {
         env = "MIDNIGHT_PROOF_SERVER_JOB_TIMEOUT"
     )]
     job_timeout: f64,
+    /// Maximum buffered bytes in one request body. Must accommodate the largest key bundle.
+    #[arg(long, default_value_t = 512 * 1024 * 1024, env = "MIDNIGHT_PROOF_SERVER_MAX_BODY_BYTES")]
+    max_body_bytes: usize,
+    /// Maximum requests reading or decoding bodies concurrently.
+    #[arg(long, default_value_t = 2, env = "MIDNIGHT_PROOF_SERVER_MAX_INGRESS")]
+    max_ingress: usize,
+    #[arg(
+        long,
+        default_value_t = 120,
+        env = "MIDNIGHT_PROOF_SERVER_BODY_READ_TIMEOUT_SECS"
+    )]
+    body_read_timeout_secs: u64,
     #[arg(
         long,
         default_value_t = false,
@@ -132,8 +144,12 @@ async fn main() -> std::io::Result<()> {
         keys.into_iter().collect::<Result<Vec<_>, _>>()?;
     }
     let pool = WorkerPool::new(args.num_workers, args.job_capacity, args.job_timeout);
-    server(args.port, !args.no_fetch_params, pool)
-        .unwrap()
+    let ingress = IngressConfig {
+        max_body_bytes: args.max_body_bytes,
+        max_inflight: args.max_ingress,
+        read_timeout: std::time::Duration::from_secs(args.body_read_timeout_secs),
+    };
+    server_with_ingress_config(args.port, !args.no_fetch_params, pool, ingress)?
         .0
         .await
 }
