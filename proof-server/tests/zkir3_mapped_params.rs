@@ -11,6 +11,7 @@ use std::time::Instant;
 
 use base_crypto::data_provider::MidnightDataProvider;
 use midnight_curves::Bls12;
+use midnight_proofs::config::{CancelToken, ProverConfig, ProverContext};
 use midnight_proofs::poly::kzg::params::ParamsKZG;
 use midnight_proofs::utils::SerdeFormat;
 use rand::SeedableRng;
@@ -201,11 +202,35 @@ async fn exercise_heap_and_mapped(
         .open_or_build(&name, || Ok(params))
         .expect("publish companion");
     let mapped = MappedParams::new(NoFallback, trusted);
+    let spill_dir = tempfile::tempdir().expect("private spill dir");
+    let mapped_context = if report_timing {
+        ProverContext::new(ProverConfig::process().clone())
+    } else {
+        let mut policy = ProverConfig::heap();
+        policy.spill_cosets = true;
+        policy.coset_spill_floor_k = 0;
+        policy.spill_dir = Some(spill_dir.path().to_path_buf());
+        assert!(policy.spills_cosets_at(k as u32));
+        ProverContext::new(policy)
+    };
+    if !report_timing {
+        let token = CancelToken::new();
+        token.cancel();
+        let cancelled = mapped_context.clone().with_cancel(token);
+        let error = preimage
+            .prove_with_context::<IrSource>(rng(), &mapped, &resolver, &cancelled)
+            .await
+            .expect_err("a cancelled v3 request must stop");
+        assert!(matches!(
+            error.downcast_ref::<midnight_proofs::plonk::Error>(),
+            Some(midnight_proofs::plonk::Error::Cancelled { .. })
+        ));
+    }
     let mapped_start = Instant::now();
     let (mapped_proof, _) = preimage
-        .prove::<IrSource>(rng(), &mapped, &resolver)
+        .prove_with_context::<IrSource>(rng(), &mapped, &resolver, &mapped_context)
         .await
-        .expect("mapped proof");
+        .expect("mapped proof with explicit context");
     let mapped_elapsed = mapped_start.elapsed();
     resolver
         .vk
