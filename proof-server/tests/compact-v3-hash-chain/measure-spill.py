@@ -56,6 +56,12 @@ def main() -> int:
         help="disable coset spill in the context-only test",
     )
     parser.add_argument(
+        "--spill-floor-k",
+        type=int,
+        default=0,
+        help="coset spill floor for the context-only test (default: 0)",
+    )
+    parser.add_argument(
         "--max-wall-seconds",
         type=float,
         default=1200.0,
@@ -64,6 +70,8 @@ def main() -> int:
     args = parser.parse_args()
     if args.max_wall_seconds <= 0:
         parser.error("--max-wall-seconds must be positive")
+    if not 0 <= args.spill_floor_k <= 2**32 - 1:
+        parser.error("--spill-floor-k must fit in u32")
     binary = args.test_binary.resolve()
     if sys.platform != "darwin":
         parser.error("this probe reports wait4 RSS in macOS bytes")
@@ -83,7 +91,8 @@ def main() -> int:
             TMPDIR=str(temp_dir),
             MIDNIGHT_BENCH_PHASE_FILE=str(phase_file),
             MIDNIGHT_SPILL_COSETS="1",
-            MIDNIGHT_SPILL_FLOOR_K="0",
+            MIDNIGHT_SPILL_FLOOR_K=str(args.spill_floor_k),
+            MIDNIGHT_BENCH_SPILL_FLOOR_K=str(args.spill_floor_k),
             MIDNIGHT_BENCH_REQUIRE_SPILL="1",
             MIDNIGHT_SPILL_DIR=str(spill_dir),
         )

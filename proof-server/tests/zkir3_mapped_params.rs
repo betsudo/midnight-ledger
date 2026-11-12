@@ -265,6 +265,15 @@ fn compact_generated_zkir3_hash_chain_k17_cost_model() {
     assert_eq!((model.k(), model.rows()), (17, 94_324));
 }
 
+#[test]
+fn compact_generated_zkir3_hash_chain_k18_cost_model() {
+    let ir =
+        IrSource::load(include_str!("compact-v3-hash-chain-k18/hashAndIncrement.zkir").as_bytes())
+            .expect("load Compact-generated k=18 v3 hash-chain IR");
+    let model = ir.model();
+    assert_eq!((model.k(), model.rows()), (18, 147_048));
+}
+
 #[actix_web::test]
 #[ignore = "focused Ledger9 proof timing; run explicitly with or without forced spill"]
 async fn compact_generated_zkir3_hash_chain_proof_timing() {
@@ -304,6 +313,16 @@ async fn compact_generated_zkir3_hash_chain_k17_context_only() {
         IrSource::load(include_str!("compact-v3-hash-chain-k17/hashAndIncrement.zkir").as_bytes())
             .expect("load Compact-generated k=17 v3 hash-chain IR");
     prove_hash_chain_context_only(ir, 17, 94_324).await;
+}
+
+#[actix_web::test]
+#[cfg(feature = "zkir3-context")]
+#[ignore = "focused one-arm k=18 Ledger9 key-policy memory measurement"]
+async fn compact_generated_zkir3_hash_chain_k18_context_only() {
+    let ir =
+        IrSource::load(include_str!("compact-v3-hash-chain-k18/hashAndIncrement.zkir").as_bytes())
+            .expect("load Compact-generated k=18 v3 hash-chain IR");
+    prove_hash_chain_context_only(ir, 18, 147_048).await;
 }
 
 #[cfg(feature = "zkir3-context")]
@@ -361,19 +380,26 @@ async fn prove_hash_chain_context_only(ir: IrSource, expected_k: u8, expected_ro
     let spill_dir = tempfile::tempdir().expect("private spill dir");
     let heap_key = std::env::var("MIDNIGHT_BENCH_HEAP_KEY").as_deref() == Ok("1");
     let spill_cosets = std::env::var("MIDNIGHT_BENCH_NO_COSET_SPILL").as_deref() != Ok("1");
+    let spill_floor_k = std::env::var("MIDNIGHT_BENCH_SPILL_FLOOR_K")
+        .ok()
+        .map(|value| value.parse::<u32>().expect("valid spill floor"))
+        .unwrap_or(0);
     let mut policy = if heap_key {
         ProverConfig::heap()
     } else {
         ProverConfig::mapped_key_and_cosets()
     };
     policy.spill_cosets = spill_cosets;
-    policy.coset_spill_floor_k = 0;
+    policy.coset_spill_floor_k = spill_floor_k;
     policy.spill_dir = Some(
         std::env::var_os("MIDNIGHT_SPILL_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| spill_dir.path().to_path_buf()),
     );
-    assert_eq!(policy.spills_cosets_at(k as u32), spill_cosets);
+    assert_eq!(
+        policy.spills_cosets_at(k as u32),
+        spill_cosets && k as u32 >= spill_floor_k
+    );
     let context = ProverContext::new(policy);
     let preimage = ProofPreimage {
         binding_input: 42.into(),
@@ -411,7 +437,7 @@ async fn prove_hash_chain_context_only(ir: IrSource, expected_k: u8, expected_ro
         std::fs::write(path, "done").expect("mark completed proof");
     }
     eprintln!(
-        "v3 context-only hash chain k={k} rows={rows} heap_key={heap_key} spill_cosets={spill_cosets} proof={prove_elapsed:?} bytes={}",
+        "v3 context-only hash chain k={k} rows={rows} heap_key={heap_key} spill_cosets={spill_cosets} spill_floor_k={spill_floor_k} proof={prove_elapsed:?} bytes={}",
         proof.0.len()
     );
 }

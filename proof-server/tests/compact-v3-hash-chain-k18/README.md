@@ -1,0 +1,67 @@
+# Ledger9 ZKIR v3 k=18 memory probe
+
+`hash-and-increment.compact` chains 78 persistent hashes and increments a
+ledger counter. Compact 0.36.1 (`7fa3a117c`, Ledger target `zkir-3.2.1`)
+generated `hashAndIncrement.zkir` with `--skip-zk`. The ZKIR 3.2.1 cost model
+reports **k=18, 147,048 rows**; the non-ignored cost-model test checks this.
+The source and IR SHA-256 hashes are
+`0bd96db61cc243c43f9775e8689ef903dac4457e8d5a3c62e507718a8add43ed` and
+`47ad5040afa543f1846b7ae1a378db4b8ea900103609d0e6206238125d039abb`.
+
+Reproduce the IR from this directory with:
+
+```sh
+compact compile +0.36.1 --skip-zk hash-and-increment.compact generated
+cmp generated/zkir/hashAndIncrement.zkir hashAndIncrement.zkir
+```
+
+The ignored `compact_generated_zkir3_hash_chain_k18_context_only` test runs one
+explicit-context proof per process. It creates synthetic parameters and keys,
+serializes and drops the generated key, loads that key through the v3 resolver,
+uses the same immutable mapped parameter companion in every arm, and verifies
+the 5,392-byte proof. `--heap-key` selects heap key storage;
+`--no-coset-spill` disables coset spill. Build the test with proof-server feature
+`zkir3-context` and both local Cargo path patches in `docs/ledger9-local-sync.md`,
+then run each arm through the adjacent `compact-v3-hash-chain/measure-spill.py`:
+
+```sh
+python3 proof-server/tests/compact-v3-hash-chain/measure-spill.py <test-binary> \
+  --test-name compact_generated_zkir3_hash_chain_k18_context_only --spill-floor-k 18
+python3 proof-server/tests/compact-v3-hash-chain/measure-spill.py <test-binary> \
+  --test-name compact_generated_zkir3_hash_chain_k18_context_only --spill-floor-k 18 --heap-key
+python3 proof-server/tests/compact-v3-hash-chain/measure-spill.py <test-binary> \
+  --test-name compact_generated_zkir3_hash_chain_k18_context_only --spill-floor-k 18 --heap-key --no-coset-spill
+```
+
+## Local measurements
+
+Apple M2 Max with 96 GiB RAM, macOS 26.2, rustc 1.98.1, Cargo debug/test
+profile. Ledger base `483a842c` plus this fixture, ZKIR `8c93bf7`, stdlib
+`bb67a88b`, and Ledger-pinned optimized proofs 0.8.2 revision `397b2424`.
+Each row is a separate process. The run order below is chronological. All six
+proofs verified. The spill floor was k=18 for every arm; the no-spill arms
+explicitly disabled coset spill.
+
+| Key / cosets | Proof seconds | Sampled peak RSS during proof (KiB) | `wait4` process peak RSS (bytes) | Peak sampled live spill (bytes) |
+| --- | ---: | ---: | ---: | ---: |
+| heap / no spill | 54.18 | 4,287,712 | 4,399,054,848 | 0 |
+| heap / spill | 55.62 | 4,582,960 | 4,692,967,424 | 335,544,320 |
+| mapped / spill | 59.09 | 4,373,376 | 4,511,891,456 | 2,424,307,712 |
+| heap / spill | 55.76 | 4,656,368 | 4,768,120,832 | 335,544,320 |
+| heap / no spill | 56.35 | 4,754,592 | 4,868,702,208 | 0 |
+| mapped / spill | 59.18 | 4,324,032 | 4,427,808,768 | 2,424,307,712 |
+
+The script samples `ps` RSS and deduplicated `lsof` file names during a
+test-marked proving phase, and uses `wait4` for whole-process peak RSS. Spill
+counts include mapped-key and coset files in a private directory; they are
+file lengths, not resident pages. The mapped-key samples used 205–325 MiB less
+sampled proof RSS than the adjacent heap-key/spill samples and about 1,992 MiB
+more sampled live spill. Their proof calls took 3.3–3.6 seconds longer.
+
+The two heap/no-spill samples straddled both heap/spill samples in RSS. The
+coset-spill benefit at the default k=18 floor is therefore inconclusive from
+these runs; no default-policy change follows. This is a single circuit on one
+host, not a throughput, private physical footprint, disk-capacity, or k=20
+qualification. RSS counts mapped pages, and `lsof` sampling can miss
+short-lived files. The script imposes a 20-minute ceiling per process and
+removes each private temporary directory on exit.
