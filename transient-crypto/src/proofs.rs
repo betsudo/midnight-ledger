@@ -45,7 +45,8 @@ use std::io::Write;
 use std::io::{self, Read, Seek};
 #[cfg(feature = "proptest")]
 use std::marker::PhantomData;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
+use std::time::Duration;
 use std::{
     any::{Any, TypeId},
     cmp::Ordering,
@@ -922,6 +923,74 @@ fn cached_policy_key<T: Zkir>(
     key
 }
 
+fn check_key_cancelled(
+    context: Option<&ProverContext>,
+    phase: &'static str,
+) -> Result<(), ProvingError> {
+    if context.is_some_and(ProverContext::is_cancelled) {
+        Err(midnight_proofs::plonk::Error::Cancelled { phase }.into())
+    } else {
+        Ok(())
+    }
+}
+
+fn lock_policy_build_gate<'a>(
+    gate: &'a Mutex<()>,
+    context: Option<&ProverContext>,
+) -> Result<MutexGuard<'a, ()>, ProvingError> {
+    if context.is_none() {
+        // The gate carries no data; a previous builder's panic cannot corrupt it.
+        return Ok(gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner));
+    }
+    loop {
+        check_key_cancelled(context, "prover_key.wait")?;
+        match gate.try_lock() {
+            Ok(guard) => return Ok(guard),
+            Err(TryLockError::Poisoned(poison)) => return Ok(poison.into_inner()),
+            Err(TryLockError::WouldBlock) => std::thread::sleep(Duration::from_millis(10)),
+        }
+    }
+}
+
+#[cfg(test)]
+mod key_build_gate_tests {
+    use super::*;
+    use midnight_proofs::config::CancelToken;
+    use std::sync::mpsc;
+
+    #[test]
+    fn queued_request_can_cancel_while_another_builder_holds_admission() {
+        let gate = Arc::new(Mutex::new(()));
+        let active = gate.lock().expect("hold build admission");
+        let token = CancelToken::new();
+        let context = ProverContext::new(ProverConfig::heap()).with_cancel(token.clone());
+        let (started_tx, started_rx) = mpsc::channel();
+        let waiting_gate = gate.clone();
+        let waiter = std::thread::spawn(move || {
+            started_tx.send(()).expect("announce waiter");
+            lock_policy_build_gate(&waiting_gate, Some(&context)).map(|_| ())
+        });
+        started_rx.recv().expect("waiter started");
+        std::thread::sleep(Duration::from_millis(25));
+        token.cancel();
+        let error = waiter
+            .join()
+            .expect("waiter thread")
+            .expect_err("cancelled waiter must leave the queue");
+        assert!(matches!(
+            error.downcast_ref::<midnight_proofs::plonk::Error>(),
+            Some(midnight_proofs::plonk::Error::Cancelled {
+                phase: "prover_key.wait"
+            })
+        ));
+        assert!(gate.try_lock().is_err(), "active builder still owns gate");
+        drop(active);
+        assert!(gate.try_lock().is_ok(), "admission remains reusable");
+    }
+}
+
 impl<T: Zkir> InnerProverKey<T> {
     fn try_cache(&mut self) {
         let hash = match self {
@@ -988,12 +1057,31 @@ impl<T: Zkir> ProverKey<T> {
     /// another policy must not inherit this request's storage decisions.
     /// The separate policy cache retains at most one initialized key, including
     /// any mapped files it owns. A process-wide build gate prevents concurrent
-    /// misses from constructing multiple keys at once; waiting for that gate
-    /// is not yet cancellation-aware.
+    /// misses from constructing multiple keys at once.
     pub fn init_with_policy(
         &self,
         policy: &ProverConfig,
     ) -> Result<Arc<T::ProverKey>, ProvingError> {
+        self.init_with_policy_inner(policy, None)
+    }
+
+    /// Load a lazy key under this request's memory policy and cancellation token.
+    /// Cancellation is checked while waiting for key-build admission and before
+    /// retaining the completed key. The low-level key reader cannot yet stop
+    /// partway through a single read.
+    pub fn init_with_context(
+        &self,
+        context: &ProverContext,
+    ) -> Result<Arc<T::ProverKey>, ProvingError> {
+        self.init_with_policy_inner(&context.config, Some(context))
+    }
+
+    fn init_with_policy_inner(
+        &self,
+        policy: &ProverConfig,
+        context: Option<&ProverContext>,
+    ) -> Result<Arc<T::ProverKey>, ProvingError> {
+        check_key_cancelled(context, "prover_key.init")?;
         let mutex = self.0.lock().expect("mutex is not poisoned");
         let data = match &*mutex {
             InnerProverKey::Uninitialized(data) => data,
@@ -1009,22 +1097,22 @@ impl<T: Zkir> ProverKey<T> {
         let hash = persistent_hash(&data[..]);
         if let Ok(mut cache) = PK_POLICY_CACHE.lock() {
             if let Some(key) = cached_policy_key::<T>(&mut cache, &hash, policy) {
+                check_key_cancelled(context, "prover_key.cache")?;
                 return Ok(key);
             }
         }
-        // The gate carries no data, so a previous builder's panic does not
-        // invalidate it. Recover the lock and let the next request retry.
-        let _build = PK_POLICY_BUILD_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _build = lock_policy_build_gate(&PK_POLICY_BUILD_LOCK, context)?;
+        check_key_cancelled(context, "prover_key.wait")?;
         // A prior waiter may have populated the cache while this request was
         // waiting at the build gate.
         if let Ok(mut cache) = PK_POLICY_CACHE.lock() {
             if let Some(key) = cached_policy_key::<T>(&mut cache, &hash, policy) {
+                check_key_cancelled(context, "prover_key.cache")?;
                 return Ok(key);
             }
         }
         let key = Arc::new(T::read_raw_pk_with_policy(&data[..], policy)?);
+        check_key_cancelled(context, "prover_key.read")?;
         if let Ok(mut cache) = PK_POLICY_CACHE.lock() {
             cache.retain(|entry| {
                 entry.hash != hash || entry.type_id != TypeId::of::<T>() || entry.policy != *policy

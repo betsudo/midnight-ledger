@@ -68,6 +68,75 @@ impl Resolver for KeyResolver {
 }
 
 #[cfg(feature = "zkir3-context")]
+struct CancellingResolver {
+    inner: KeyResolver,
+    token: CancelToken,
+}
+
+#[cfg(feature = "zkir3-context")]
+impl Resolver for CancellingResolver {
+    async fn resolve_key(&self, key: KeyLocation) -> io::Result<Option<ProvingKeyMaterial>> {
+        let material = self.inner.resolve_key(key).await?;
+        self.token.cancel();
+        Ok(material)
+    }
+}
+
+#[actix_web::test]
+#[cfg(feature = "zkir3-context")]
+async fn cancellation_after_resolution_stops_before_key_load() {
+    let ir = IrSource::load(
+        &br#"{
+            "version": { "major": 3, "minor": 0 },
+            "inputs": [{ "name": "%v_0", "type": "Scalar<BLS12-381>" }],
+            "outputs": [],
+            "do_communications_commitment": false,
+            "instructions": [{ "op": "assert", "cond": "%v_0" }]
+        }"#[..],
+    )
+    .expect("load v3 IR");
+    let params = HeapParams(ParamsProver(Arc::new(ParamsKZG::<Bls12>::unsafe_setup(
+        ir.k() as u32,
+        ChaCha20Rng::from_seed([13; 32]),
+    ))));
+    let (pk, vk) = ir.keygen(&params).await.expect("keygen");
+    let token = CancelToken::new();
+    let resolver = CancellingResolver {
+        inner: KeyResolver {
+            pk,
+            vk,
+            ir: ir.clone(),
+        },
+        token: token.clone(),
+    };
+    let preimage = ProofPreimage {
+        binding_input: 42.into(),
+        communications_commitment: None,
+        inputs: vec![1.into()],
+        private_transcript: vec![],
+        public_transcript_inputs: vec![],
+        public_transcript_outputs: vec![],
+        key_location: KeyLocation(Cow::Borrowed("test")),
+    };
+    let context = ProverContext::new(ProverConfig::mapped_key()).with_cancel(token);
+    let error = preimage
+        .prove_with_context::<IrSource>(
+            ChaCha20Rng::from_seed([42; 32]),
+            &params,
+            &resolver,
+            &context,
+        )
+        .await
+        .expect_err("resolver cancellation must stop before key load");
+    assert!(matches!(
+        error.downcast_ref::<midnight_proofs::plonk::Error>(),
+        Some(midnight_proofs::plonk::Error::Cancelled {
+            phase: "prover_key.init"
+        })
+    ));
+}
+
+#[cfg(feature = "zkir3-context")]
 struct FileKeyResolver {
     prover_key_path: PathBuf,
     verifier_key: Vec<u8>,
