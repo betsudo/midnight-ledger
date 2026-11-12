@@ -6,6 +6,8 @@
 
 use std::borrow::Cow;
 use std::io;
+#[cfg(feature = "zkir3-context")]
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -59,6 +61,24 @@ impl Resolver for KeyResolver {
             prover_key,
             verifier_key,
             ir_source,
+        }))
+    }
+}
+
+#[cfg(feature = "zkir3-context")]
+struct FileKeyResolver {
+    prover_key_path: PathBuf,
+    verifier_key: Vec<u8>,
+    ir_source: Vec<u8>,
+}
+
+#[cfg(feature = "zkir3-context")]
+impl Resolver for FileKeyResolver {
+    async fn resolve_key(&self, _key: KeyLocation) -> io::Result<Option<ProvingKeyMaterial>> {
+        Ok(Some(ProvingKeyMaterial {
+            prover_key: std::fs::read(&self.prover_key_path)?,
+            verifier_key: self.verifier_key.clone(),
+            ir_source: self.ir_source.clone(),
         }))
     }
 }
@@ -131,6 +151,108 @@ async fn compact_generated_zkir3_hash_chain_proof_timing() {
         true,
     )
     .await;
+}
+
+#[actix_web::test]
+#[cfg(feature = "zkir3-context")]
+#[ignore = "focused one-arm Ledger9 key-policy memory measurement"]
+async fn compact_generated_zkir3_hash_chain_context_only() {
+    let ir = IrSource::load(include_str!("compact-v3-hash-chain/hashAndIncrement.zkir").as_bytes())
+        .expect("load Compact-generated v3 hash-chain IR");
+    let k = ir.k();
+    assert_eq!((k, ir.model().rows()), (15, 32_185));
+    let opening: Fr = 7.into();
+    let value: Fr = 7.into();
+    let commitment = transient_commit(&[value], opening);
+    let public_transcript_inputs: Vec<Fr> = [0x70, 0x01, 0x01, 0x00, 0x0e, 0x01, 0xa1]
+        .into_iter()
+        .map(Fr::from)
+        .collect();
+
+    let params = ParamsProver(Arc::new(ParamsKZG::<Bls12>::unsafe_setup(
+        k as u32,
+        ChaCha20Rng::from_seed([7; 32]),
+    )));
+    let mut params_bytes = Vec::new();
+    params
+        .0
+        .write_custom(&mut params_bytes, SerdeFormat::RawBytesUnchecked)
+        .expect("serialize params");
+    let verifier_params = ParamsVerifier::read(&params_bytes[..]).expect("verifier params");
+    drop(params_bytes);
+
+    let heap = HeapParams(params.clone());
+    let (pk, vk) = ir.keygen(&heap).await.expect("v3 keygen");
+    drop(heap);
+    let key_dir = tempfile::tempdir().expect("private key dir");
+    let prover_key_path = key_dir.path().join("prover.key");
+    let mut prover_key = Vec::new();
+    let mut verifier_key = Vec::new();
+    let mut ir_source = Vec::new();
+    tagged_serialize(&pk, &mut prover_key).expect("serialize prover key");
+    tagged_serialize(&vk, &mut verifier_key).expect("serialize verifier key");
+    tagged_serialize(&ir, &mut ir_source).expect("serialize IR");
+    std::fs::write(&prover_key_path, &prover_key).expect("write temporary prover key");
+    drop(prover_key);
+    drop(pk);
+    let resolver = FileKeyResolver {
+        prover_key_path,
+        verifier_key,
+        ir_source,
+    };
+
+    let params_dir = tempfile::tempdir().expect("private companion dir");
+    let trusted = unsafe { TrustedParamsDir::new(params_dir.path()) };
+    let cache = CompanionCache::from_trusted_dir(trusted.clone());
+    cache
+        .open_or_build(&MidnightDataProvider::name_k(k), || Ok(params))
+        .expect("publish companion");
+    let mapped = MappedParams::new(NoFallback, trusted);
+    let spill_dir = tempfile::tempdir().expect("private spill dir");
+    let heap_key = std::env::var("MIDNIGHT_BENCH_HEAP_KEY").as_deref() == Ok("1");
+    let mut policy = if heap_key {
+        ProverConfig::heap()
+    } else {
+        ProverConfig::mapped_key_and_cosets()
+    };
+    policy.spill_cosets = true;
+    policy.coset_spill_floor_k = 0;
+    policy.spill_dir = Some(
+        std::env::var_os("MIDNIGHT_SPILL_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| spill_dir.path().to_path_buf()),
+    );
+    assert!(policy.spills_cosets_at(k as u32));
+    let context = ProverContext::new(policy);
+    let preimage = ProofPreimage {
+        binding_input: 42.into(),
+        communications_commitment: Some((commitment, opening)),
+        inputs: vec![value],
+        private_transcript: vec![],
+        public_transcript_inputs: public_transcript_inputs.clone(),
+        public_transcript_outputs: vec![],
+        key_location: KeyLocation(Cow::Borrowed("test")),
+    };
+    let start = Instant::now();
+    let (proof, _) = preimage
+        .prove_with_context::<IrSource>(
+            ChaCha20Rng::from_seed([42; 32]),
+            &mapped,
+            &resolver,
+            &context,
+        )
+        .await
+        .expect("context-only v3 proof");
+    let prove_elapsed = start.elapsed();
+    let public_inputs = [42.into(), commitment]
+        .into_iter()
+        .chain(public_transcript_inputs);
+    vk.verify(&verifier_params, &proof, public_inputs)
+        .expect("verify context-only proof");
+    eprintln!(
+        "v3 context-only hash chain k={k} rows=32185 heap_key={heap_key} proof={prove_elapsed:?} bytes={}",
+        proof.0.len()
+    );
 }
 
 async fn exercise_heap_and_mapped(
@@ -213,7 +335,7 @@ async fn exercise_heap_and_mapped(
         assert!(policy.spills_cosets_at(k as u32));
         ProverContext::new(policy)
     };
-    if !report_timing {
+    if cfg!(feature = "zkir3-context") && !report_timing {
         let token = CancelToken::new();
         token.cancel();
         let cancelled = mapped_context.clone().with_cancel(token);
@@ -227,10 +349,17 @@ async fn exercise_heap_and_mapped(
         ));
     }
     let mapped_start = Instant::now();
-    let (mapped_proof, _) = preimage
-        .prove_with_context::<IrSource>(rng(), &mapped, &resolver, &mapped_context)
-        .await
-        .expect("mapped proof with explicit context");
+    let (mapped_proof, _) = if cfg!(feature = "zkir3-context") {
+        preimage
+            .prove_with_context::<IrSource>(rng(), &mapped, &resolver, &mapped_context)
+            .await
+            .expect("mapped proof with explicit context")
+    } else {
+        preimage
+            .prove::<IrSource>(rng(), &mapped, &resolver)
+            .await
+            .expect("mapped proof with released ZKIR")
+    };
     let mapped_elapsed = mapped_start.elapsed();
     resolver
         .vk

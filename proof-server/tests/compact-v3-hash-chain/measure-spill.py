@@ -40,6 +40,16 @@ def named_spill_files(output: str, spill_dir: Path) -> dict[str, int]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("test_binary", type=Path)
+    parser.add_argument(
+        "--test-name",
+        default="compact_generated_zkir3_hash_chain_proof_timing",
+        help="exact ignored test to measure",
+    )
+    parser.add_argument(
+        "--heap-key",
+        action="store_true",
+        help="use heap key storage in the context-only test",
+    )
     args = parser.parse_args()
     binary = args.test_binary.resolve()
     if sys.platform != "darwin":
@@ -58,11 +68,15 @@ def main() -> int:
             MIDNIGHT_BENCH_REQUIRE_SPILL="1",
             MIDNIGHT_SPILL_DIR=str(spill_dir),
         )
+        if args.heap_key:
+            env["MIDNIGHT_BENCH_HEAP_KEY"] = "1"
+        else:
+            env.pop("MIDNIGHT_BENCH_HEAP_KEY", None)
         with tempfile.TemporaryFile(mode="w+t") as log:
             process = subprocess.Popen(
                 [
                     str(binary),
-                    "compact_generated_zkir3_hash_chain_proof_timing",
+                    args.test_name,
                     "--ignored",
                     "--exact",
                     "--nocapture",

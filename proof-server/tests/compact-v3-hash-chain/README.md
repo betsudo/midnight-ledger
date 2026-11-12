@@ -84,3 +84,33 @@ The script sets the forced-spill variables, creates and removes a private
 spill directory, samples live files by unique name, and prints the test
 result plus a JSON measurement record. Remove the disposable Cargo target
 after recording the run.
+
+## One-arm key-policy comparison
+
+The ignored `compact_generated_zkir3_hash_chain_context_only` test isolates
+one explicit-context proof per process. It serializes the generated key to a
+private file, drops the initialized key, then resolves the serialized key for
+proving. Both modes use the same mapped parameters, Compact IR, witness,
+forced coset-spill floor (`k=0`), and private spill directory. The default
+maps the proving key; `--heap-key` changes only the key-storage policy.
+Build with `--features zkir3-context` and the two local path patches, then run:
+
+```sh
+python3 proof-server/tests/compact-v3-hash-chain/measure-spill.py <test-binary> \
+  --test-name compact_generated_zkir3_hash_chain_context_only
+python3 proof-server/tests/compact-v3-hash-chain/measure-spill.py <test-binary> \
+  --test-name compact_generated_zkir3_hash_chain_context_only --heap-key
+```
+
+At local Ledger base `d3b5fae2` plus this one-arm fixture, ZKIR `f928517`,
+stdlib `bb67a88b`, and pinned proofs 0.8.2, the mapped-key mode verified a
+5,392-byte proof in 7.20 and 7.17 s in two processes. `wait4` peak process
+RSS was 875,986,944 and 858,947,584 bytes; sampled live spill files peaked
+at 303,038,464 bytes in each. The matched heap-key mode verified in 6.94 s,
+with 643,137,536 bytes peak RSS and 41,943,040 bytes sampled live spill.
+All three processes include setup and key generation in their RSS peak. The
+comparison shows that mapping this `k=15` key increases observed RSS and
+tempfile use; RSS includes file-backed pages and does not measure private
+physical footprint. These few samples do not justify enabling mapped keys
+for small circuits or claim a high-`k` result. The earlier two-arm samples
+above retain both keys and should not be used for this policy comparison.
