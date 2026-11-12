@@ -7,8 +7,7 @@ publish = false
 
 [features]
 default = []
-# Disabled for now, as we currently have no experimental features.
-#experimental = []
+zkir3-context = []
 
 [dependencies]
 ledger = { path = "../ledger", package = "midnight-ledger-v9", default-features = false, features = ["proving"] }

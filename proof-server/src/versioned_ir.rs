@@ -86,7 +86,7 @@ pub(crate) async fn prove(
     ppi: Arc<ProofPreimage>,
     ir_source: &[u8],
     resolver: &Resolver,
-    context: &ProverContext,
+    _context: &ProverContext,
 ) -> Result<(Proof, Vec<Option<usize>>), WorkError> {
     let tag = peek_tag(&mut std::io::Cursor::new(ir_source))
         .map_err(|e| WorkError::BadInput(e.to_string()))?;
@@ -113,10 +113,25 @@ pub(crate) async fn prove(
                 .map_err(|e| WorkError::BadInput(e.to_string()))?;
             Ok((proof, skips))
         }
-        "ir-source[v3-generic]" => ppi
-            .prove_with_context::<zkir_v3::IrSource>(OsRng, &*PUBLIC_PARAMS, resolver, context)
-            .await
-            .map_err(classify_proving_error),
+        "ir-source[v3-generic]" => {
+            #[cfg(feature = "zkir3-context")]
+            {
+                ppi.prove_with_context::<zkir_v3::IrSource>(
+                    OsRng,
+                    &*PUBLIC_PARAMS,
+                    resolver,
+                    _context,
+                )
+                .await
+                .map_err(classify_proving_error)
+            }
+            #[cfg(not(feature = "zkir3-context"))]
+            {
+                ppi.prove::<zkir_v3::IrSource>(OsRng, &*PUBLIC_PARAMS, resolver)
+                    .await
+                    .map_err(classify_proving_error)
+            }
+        }
         _ => Err(WorkError::BadInput(format!(
             "Unsupported ZKIR tag: '{tag}'"
         ))),
