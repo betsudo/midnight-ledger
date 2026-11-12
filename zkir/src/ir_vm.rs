@@ -209,8 +209,10 @@ fn ecc_from_parts(
     let point_var: AssignedNativePoint<embedded::AffineExtended> =
         std.jubjub().assign(layouter, point)?;
 
-    std.assert_equal(layouter, x, &std.jubjub().x_coordinate(&point_var))?;
-    std.assert_equal(layouter, y, &std.jubjub().y_coordinate(&point_var))?;
+    let point_x = std.jubjub().x(layouter, &point_var)?;
+    let point_y = std.jubjub().y(layouter, &point_var)?;
+    std.assert_equal(layouter, x, &point_x)?;
+    std.assert_equal(layouter, y, &point_y)?;
     Ok(point_var)
 }
 
@@ -790,16 +792,16 @@ impl Relation for IrSource {
                     let b =
                         ecc_from_parts(std, layouter, idx(&memory, *b_x)?, idx(&memory, *b_y)?)?;
                     let c = EccInstructions::add(std.jubjub(), layouter, &a, &b)?;
-                    mem_push(std.jubjub().x_coordinate(&c), &mut memory)?;
-                    mem_push(std.jubjub().y_coordinate(&c), &mut memory)?;
+                    mem_push(std.jubjub().x(layouter, &c)?, &mut memory)?;
+                    mem_push(std.jubjub().y(layouter, &c)?, &mut memory)?;
                 }
                 I::EcMul { a_x, a_y, scalar } => {
                     let a =
                         ecc_from_parts(std, layouter, idx(&memory, *a_x)?, idx(&memory, *a_y)?)?;
                     let scalar = std.jubjub().convert(layouter, idx(&memory, *scalar)?)?;
                     let b = std.jubjub().msm(layouter, &[scalar], &[a])?;
-                    mem_push(std.jubjub().x_coordinate(&b), &mut memory)?;
-                    mem_push(std.jubjub().y_coordinate(&b), &mut memory)?;
+                    mem_push(std.jubjub().x(layouter, &b)?, &mut memory)?;
+                    mem_push(std.jubjub().y(layouter, &b)?, &mut memory)?;
                 }
                 I::EcMulGenerator { scalar } => {
                     let g: AssignedNativePoint<embedded::AffineExtended> = std
@@ -807,8 +809,8 @@ impl Relation for IrSource {
                         .assign_fixed(layouter, embedded::Affine::generator())?;
                     let scalar = std.jubjub().convert(layouter, idx(&memory, *scalar)?)?;
                     let b = std.jubjub().msm(layouter, &[scalar], &[g])?;
-                    mem_push(std.jubjub().x_coordinate(&b), &mut memory)?;
-                    mem_push(std.jubjub().y_coordinate(&b), &mut memory)?;
+                    mem_push(std.jubjub().x(layouter, &b)?, &mut memory)?;
+                    mem_push(std.jubjub().y(layouter, &b)?, &mut memory)?;
                 }
                 I::HashToCurve { inputs } => {
                     let inputs = inputs
@@ -816,8 +818,8 @@ impl Relation for IrSource {
                         .map(|input| idx(&memory, *input).cloned())
                         .collect::<Result<Vec<_>, _>>()?;
                     let point = std.hash_to_curve(layouter, &inputs)?;
-                    mem_push(std.jubjub().x_coordinate(&point), &mut memory)?;
-                    mem_push(std.jubjub().y_coordinate(&point), &mut memory)?;
+                    mem_push(std.jubjub().x(layouter, &point)?, &mut memory)?;
+                    mem_push(std.jubjub().y(layouter, &point)?, &mut memory)?;
                 }
             }
         }
@@ -874,6 +876,7 @@ impl Relation for IrSource {
             IrMinorVersion::V1 | IrMinorVersion::V2 => 4,
         };
         ZkStdLibArch {
+            nb_arith_cols: 5,
             jubjub: jubjub || hash_to_curve,
             poseidon: poseidon || hash_to_curve,
             sha2_256,

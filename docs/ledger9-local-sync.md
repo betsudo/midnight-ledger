@@ -74,3 +74,26 @@ For local reproduction from `sync/ledger9-context`, use the two path patches bel
 --config 'patch.crates-io.midnight-zk-stdlib.path="/Users/ysh/iohk/midnight-zk-082-stdlib/zk_stdlib"'
 --config 'patch.crates-io.midnight-zkir.path="/Users/ysh/iohk/midnight-zkir/zkir"'
 ```
+
+## Exploratory proofs 0.8.3 consumer branch
+
+`sync/ledger9-proofs-083-v2-compat` keeps the released Ledger9 0.8.2 line
+untouched. With temporary local paths to `betsudo/midnight-zk`
+`sync/proofs-0.8.3-memory` and the adapted external ZKIR 3.2.1 branch
+`sync/proofs-083-adapter`, it updates the in-tree ZKIR v2 compatibility crate
+for the new stdlib `KZG` type argument, cost-model signature, ECC coordinate
+API, and arithmetic-column field. A fixture-free v2 test generated its own
+parameters and verified minimal, ECC, and hash-to-curve proofs; the minimal
+proof also rejected a wrong public statement. The opt-in ZKIR v3 HTTP proof
+test passed with forced coset spill. These gates establish v2 source and proof
+compatibility with the local 0.8.3 stack, not cross-version artifact
+compatibility or a memory win.
+
+The broader `zkir3_mapped_params` test target still fails to compile on this
+stack: its mapped proving-key policy constructors are absent from the 0.8.3
+`ProverConfig`. The 0.8.3 branch currently selects heap or spilled cosets and
+can map the trusted SRS, but it has not ported the 0.8.2 mapped proving-key
+storage policy. Do not replace that test with a heap-only assertion or repin
+the released Ledger9 consumer. Existing betsudo Ledger issue #30 owns the v2
+and v3 acceptance gate; its current-head CI, wasm, and artifact compatibility
+requirements remain open.
