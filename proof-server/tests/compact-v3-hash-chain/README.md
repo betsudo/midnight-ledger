@@ -29,5 +29,14 @@ revision `397b2424` measured 7.36 s heap / 5.84 s mapped with the
 default spill policy, then 7.04 s heap / 6.20 s mapped with forced spill.
 Both paths produced 5,392-byte proofs that verified. The proofs were not
 byte-identical. These are single samples, with setup, key generation, and
-companion creation excluded from the timers; they establish a reproducible
-probe, not a throughput or peak-memory comparison.
+companion creation excluded from the timers.
+
+In a separate forced-spill run of the same test, macOS `wait4` reported
+1,045,184,512 bytes of peak process RSS (about 997 MiB). A 20 ms `ps` poll
+observed 1,020,688 KiB. Sampling the process's mapped tempfiles with
+`lsof -p <test-pid> -F ns` observed at most 41,943,040 bytes (40 MiB) of
+spill files alive together: two files, the larger 33,554,432 bytes. The
+files use `tempfile_in` and are unlinked immediately, so listing
+`MIDNIGHT_SPILL_DIR` is **not** a spill measurement. This is an observed
+peak for a process that performs setup and both proof arms in sequence;
+it does not isolate heap versus mapped RSS or establish throughput.
