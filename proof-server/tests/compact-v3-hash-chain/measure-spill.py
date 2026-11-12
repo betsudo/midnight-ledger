@@ -50,7 +50,20 @@ def main() -> int:
         action="store_true",
         help="use heap key storage in the context-only test",
     )
+    parser.add_argument(
+        "--no-coset-spill",
+        action="store_true",
+        help="disable coset spill in the context-only test",
+    )
+    parser.add_argument(
+        "--max-wall-seconds",
+        type=float,
+        default=1200.0,
+        help="kill a proof that exceeds this wall-time bound (default: 1200)",
+    )
     args = parser.parse_args()
+    if args.max_wall_seconds <= 0:
+        parser.error("--max-wall-seconds must be positive")
     binary = args.test_binary.resolve()
     if sys.platform != "darwin":
         parser.error("this probe reports wait4 RSS in macOS bytes")
@@ -60,9 +73,15 @@ def main() -> int:
         parser.error("lsof and ps are required")
 
     with tempfile.TemporaryDirectory(prefix="midnight-zkir3-spill-") as directory:
-        spill_dir = Path(directory)
+        spill_dir = Path(directory) / "spill"
+        temp_dir = Path(directory) / "tmp"
+        phase_file = Path(directory) / "phase"
+        spill_dir.mkdir()
+        temp_dir.mkdir()
         env = os.environ.copy()
         env.update(
+            TMPDIR=str(temp_dir),
+            MIDNIGHT_BENCH_PHASE_FILE=str(phase_file),
             MIDNIGHT_SPILL_COSETS="1",
             MIDNIGHT_SPILL_FLOOR_K="0",
             MIDNIGHT_BENCH_REQUIRE_SPILL="1",
@@ -72,6 +91,12 @@ def main() -> int:
             env["MIDNIGHT_BENCH_HEAP_KEY"] = "1"
         else:
             env.pop("MIDNIGHT_BENCH_HEAP_KEY", None)
+        if args.no_coset_spill:
+            env["MIDNIGHT_SPILL_COSETS"] = "0"
+            env["MIDNIGHT_BENCH_REQUIRE_SPILL"] = "0"
+            env["MIDNIGHT_BENCH_NO_COSET_SPILL"] = "1"
+        else:
+            env.pop("MIDNIGHT_BENCH_NO_COSET_SPILL", None)
         with tempfile.TemporaryFile(mode="w+t") as log:
             process = subprocess.Popen(
                 [
@@ -88,11 +113,24 @@ def main() -> int:
             start = time.monotonic()
             sampled_peak_rss_kib = 0
             sampled_peak_spill_bytes = 0
+            proof_peak_rss_kib = 0
+            proof_peak_spill_bytes = 0
+            proof_samples = 0
             peak_spill_sizes: list[int] = []
             samples = 0
+            timed_out = False
             while True:
                 pid, status, usage = os.wait4(process.pid, os.WNOHANG)
                 if pid:
+                    process.returncode = os.waitstatus_to_exitcode(status)
+                    break
+                if time.monotonic() - start > args.max_wall_seconds:
+                    timed_out = True
+                    try:
+                        process.kill()
+                    except ProcessLookupError:
+                        pass
+                    _, status, usage = os.wait4(process.pid, 0)
                     process.returncode = os.waitstatus_to_exitcode(status)
                     break
                 ps = subprocess.run(
@@ -102,11 +140,10 @@ def main() -> int:
                     check=False,
                 )
                 try:
-                    sampled_peak_rss_kib = max(
-                        sampled_peak_rss_kib, int(ps.stdout.strip())
-                    )
+                    current_rss_kib = int(ps.stdout.strip())
+                    sampled_peak_rss_kib = max(sampled_peak_rss_kib, current_rss_kib)
                 except ValueError:
-                    pass
+                    current_rss_kib = 0
                 files = subprocess.run(
                     ["lsof", "-p", str(process.pid), "-F", "ns"],
                     capture_output=True,
@@ -118,6 +155,10 @@ def main() -> int:
                 if spill_bytes > sampled_peak_spill_bytes:
                     sampled_peak_spill_bytes = spill_bytes
                     peak_spill_sizes = sorted(entries.values())
+                if phase_file.is_file() and phase_file.read_text() == "prove":
+                    proof_samples += 1
+                    proof_peak_rss_kib = max(proof_peak_rss_kib, current_rss_kib)
+                    proof_peak_spill_bytes = max(proof_peak_spill_bytes, spill_bytes)
                 samples += 1
                 time.sleep(0.02)
 
@@ -128,17 +169,21 @@ def main() -> int:
                 json.dumps(
                     {
                         "exit_code": process.returncode,
+                        "timed_out": timed_out,
                         "wall_seconds": round(time.monotonic() - start, 3),
                         "wait4_peak_rss_bytes": usage.ru_maxrss,
                         "sampled_peak_rss_kib": sampled_peak_rss_kib,
                         "sampled_peak_spill_bytes": sampled_peak_spill_bytes,
+                        "proof_peak_rss_kib": proof_peak_rss_kib,
+                        "proof_peak_spill_bytes": proof_peak_spill_bytes,
+                        "proof_samples": proof_samples,
                         "peak_spill_file_sizes": peak_spill_sizes,
                         "samples": samples,
                     },
                     sort_keys=True,
                 )
             )
-            return process.returncode
+            return 124 if timed_out else process.returncode
 
 
 if __name__ == "__main__":

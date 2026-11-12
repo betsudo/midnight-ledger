@@ -256,6 +256,15 @@ fn compact_generated_zkir3_hash_chain_cost_model() {
     assert_eq!((model.k(), model.rows()), (15, 32_185));
 }
 
+#[test]
+fn compact_generated_zkir3_hash_chain_k17_cost_model() {
+    let ir =
+        IrSource::load(include_str!("compact-v3-hash-chain-k17/hashAndIncrement.zkir").as_bytes())
+            .expect("load Compact-generated k=17 v3 hash-chain IR");
+    let model = ir.model();
+    assert_eq!((model.k(), model.rows()), (17, 94_324));
+}
+
 #[actix_web::test]
 #[ignore = "focused Ledger9 proof timing; run explicitly with or without forced spill"]
 async fn compact_generated_zkir3_hash_chain_proof_timing() {
@@ -284,8 +293,24 @@ async fn compact_generated_zkir3_hash_chain_proof_timing() {
 async fn compact_generated_zkir3_hash_chain_context_only() {
     let ir = IrSource::load(include_str!("compact-v3-hash-chain/hashAndIncrement.zkir").as_bytes())
         .expect("load Compact-generated v3 hash-chain IR");
+    prove_hash_chain_context_only(ir, 15, 32_185).await;
+}
+
+#[actix_web::test]
+#[cfg(feature = "zkir3-context")]
+#[ignore = "focused one-arm k=17 Ledger9 key-policy memory measurement"]
+async fn compact_generated_zkir3_hash_chain_k17_context_only() {
+    let ir =
+        IrSource::load(include_str!("compact-v3-hash-chain-k17/hashAndIncrement.zkir").as_bytes())
+            .expect("load Compact-generated k=17 v3 hash-chain IR");
+    prove_hash_chain_context_only(ir, 17, 94_324).await;
+}
+
+#[cfg(feature = "zkir3-context")]
+async fn prove_hash_chain_context_only(ir: IrSource, expected_k: u8, expected_rows: usize) {
     let k = ir.k();
-    assert_eq!((k, ir.model().rows()), (15, 32_185));
+    let rows = ir.model().rows();
+    assert_eq!((k, rows), (expected_k, expected_rows));
     let opening: Fr = 7.into();
     let value: Fr = 7.into();
     let commitment = transient_commit(&[value], opening);
@@ -335,19 +360,20 @@ async fn compact_generated_zkir3_hash_chain_context_only() {
     let mapped = MappedParams::new(NoFallback, trusted);
     let spill_dir = tempfile::tempdir().expect("private spill dir");
     let heap_key = std::env::var("MIDNIGHT_BENCH_HEAP_KEY").as_deref() == Ok("1");
+    let spill_cosets = std::env::var("MIDNIGHT_BENCH_NO_COSET_SPILL").as_deref() != Ok("1");
     let mut policy = if heap_key {
         ProverConfig::heap()
     } else {
         ProverConfig::mapped_key_and_cosets()
     };
-    policy.spill_cosets = true;
+    policy.spill_cosets = spill_cosets;
     policy.coset_spill_floor_k = 0;
     policy.spill_dir = Some(
         std::env::var_os("MIDNIGHT_SPILL_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| spill_dir.path().to_path_buf()),
     );
-    assert!(policy.spills_cosets_at(k as u32));
+    assert_eq!(policy.spills_cosets_at(k as u32), spill_cosets);
     let context = ProverContext::new(policy);
     let preimage = ProofPreimage {
         binding_input: 42.into(),
@@ -358,6 +384,10 @@ async fn compact_generated_zkir3_hash_chain_context_only() {
         public_transcript_outputs: vec![],
         key_location: KeyLocation(Cow::Borrowed("test")),
     };
+    let phase_file = std::env::var_os("MIDNIGHT_BENCH_PHASE_FILE").map(PathBuf::from);
+    if let Some(path) = &phase_file {
+        std::fs::write(path, "prove").expect("mark proof phase");
+    }
     let start = Instant::now();
     let (proof, _) = preimage
         .prove_with_context::<IrSource>(
@@ -369,13 +399,19 @@ async fn compact_generated_zkir3_hash_chain_context_only() {
         .await
         .expect("context-only v3 proof");
     let prove_elapsed = start.elapsed();
+    if let Some(path) = &phase_file {
+        std::fs::write(path, "verify").expect("mark verification phase");
+    }
     let public_inputs = [42.into(), commitment]
         .into_iter()
         .chain(public_transcript_inputs);
     vk.verify(&verifier_params, &proof, public_inputs)
         .expect("verify context-only proof");
+    if let Some(path) = &phase_file {
+        std::fs::write(path, "done").expect("mark completed proof");
+    }
     eprintln!(
-        "v3 context-only hash chain k={k} rows=32185 heap_key={heap_key} proof={prove_elapsed:?} bytes={}",
+        "v3 context-only hash chain k={k} rows={rows} heap_key={heap_key} spill_cosets={spill_cosets} proof={prove_elapsed:?} bytes={}",
         proof.0.len()
     );
 }
