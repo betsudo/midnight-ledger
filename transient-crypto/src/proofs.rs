@@ -46,8 +46,11 @@ use std::io::{self, Read, Seek};
 #[cfg(feature = "proptest")]
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
-use std::{any::Any, cmp::Ordering};
-use std::{borrow::Cow, num::NonZeroUsize};
+use std::{
+    any::{Any, TypeId},
+    cmp::Ordering,
+};
+use std::{borrow::Cow, collections::VecDeque, num::NonZeroUsize};
 use storage_core::Storable;
 use storage_core::arena::ArenaKey;
 use storage_core::db::DB;
@@ -884,10 +887,23 @@ impl<T: Zkir + Tagged> Tagged for ProverKey<T> {
 }
 
 const PK_CACHE_SIZE: usize = 5;
+// Explicit-policy keys are kept separately from the legacy bytes-only cache.
+// One entry bounds the mapped files held open after a request completes.
+const PK_POLICY_CACHE_SIZE: usize = 1;
+
+struct PolicyKeyCacheEntry {
+    hash: HashOutput,
+    type_id: TypeId,
+    policy: ProverConfig,
+    key: Arc<dyn Any + Send + Sync>,
+}
+
 lazy_static! {
     // forall<T> Arc<MidnightPK<T>>
     static ref PK_CACHE: Mutex<LruCache<HashOutput, Arc<dyn Any + Send + Sync>>> =
         Mutex::new(LruCache::new(NonZeroUsize::new(PK_CACHE_SIZE).unwrap()));
+    static ref PK_POLICY_CACHE: Mutex<VecDeque<PolicyKeyCacheEntry>> =
+        Mutex::new(VecDeque::with_capacity(PK_POLICY_CACHE_SIZE));
 }
 
 impl<T: Zkir> InnerProverKey<T> {
@@ -954,9 +970,8 @@ impl<T: Zkir> ProverKey<T> {
     /// Load a lazy key under the caller's policy without changing this key's
     /// state or using the bytes-only process cache. A subsequent request with
     /// another policy must not inherit this request's storage decisions.
-    ///
-    /// This path currently rebuilds the key on each call. Callers should
-    /// initialize it once per proof; policy-aware caching is a separate step.
+    /// The separate policy cache retains at most one initialized key, including
+    /// any mapped files it owns. Concurrent misses may still build in parallel.
     pub fn init_with_policy(
         &self,
         policy: &ProverConfig,
@@ -973,19 +988,47 @@ impl<T: Zkir> ProverKey<T> {
                 ));
             }
         };
-        Ok(Arc::new(T::read_raw_pk_with_policy(&data[..], policy)?))
+        let hash = persistent_hash(&data[..]);
+        let type_id = TypeId::of::<T>();
+        if let Ok(mut cache) = PK_POLICY_CACHE.lock() {
+            if let Some(index) = cache.iter().position(|entry| {
+                entry.hash == hash && entry.type_id == type_id && entry.policy == *policy
+            }) {
+                let entry = cache.remove(index).expect("cache index exists");
+                let key = entry.key.clone().downcast::<T::ProverKey>().ok();
+                cache.push_front(entry);
+                if let Some(key) = key {
+                    return Ok(key);
+                }
+            }
+        }
+        let key = Arc::new(T::read_raw_pk_with_policy(&data[..], policy)?);
+        if let Ok(mut cache) = PK_POLICY_CACHE.lock() {
+            cache.retain(|entry| {
+                entry.hash != hash || entry.type_id != type_id || entry.policy != *policy
+            });
+            cache.push_front(PolicyKeyCacheEntry {
+                hash,
+                type_id,
+                policy: policy.clone(),
+                key: key.clone(),
+            });
+            cache.truncate(PK_POLICY_CACHE_SIZE);
+        }
+        Ok(key)
     }
 
     /// Pre-populate the process-wide `PK_CACHE` so that a subsequent
     /// `tagged_deserialize::<ProverKey<T>>` of bytes produced by
-    /// serialising **this** key returns a `ProverKey` sharing the
-    /// same `Arc<T::ProverKey>` — no rebuild and no extended-domain
-    /// FFT recomputation.
+    /// serialising **this** key can share the same `Arc<T::ProverKey>`
+    /// when its legacy `init()` is called — no rebuild and no extended-domain
+    /// FFT recomputation. Deserialization itself keeps the raw bytes so an
+    /// explicit-policy request can select a different storage policy.
     ///
     /// Designed for `Resolver::resolve_key` impls that hold an
     /// initialized `ProverKey` in process memory and feed it into
     /// the bytes-based prover pipeline. The bytes API at the prover
-    /// boundary is preserved; the consumer's `try_cache` hits the
+    /// boundary is preserved; the consumer's `init()`/`try_cache` hits the
     /// freshly-inserted entry instead of paying the multi-GiB
     /// rebuild.
     ///
@@ -1025,7 +1068,7 @@ impl<T: Zkir> ProverKey<T> {
         // hash. Going through `T::write_raw_pk` is what makes that
         // exact rather than hopeful: `inner_serialize` writes an
         // `Initialized` key with the very same call, and the peer's
-        // `deserialize` hashes what it reads back. Re-implementing the
+        // `init()` hashes the bytes retained by `deserialize`. Re-implementing the
         // encoding here — as the ledger-8 version did, gzipping in this
         // crate — would leave two copies that must agree by convention,
         // and a drift between them is silent: every lookup misses and
