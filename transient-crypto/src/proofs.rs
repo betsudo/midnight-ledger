@@ -115,6 +115,10 @@ pub trait ParamsProverProvider {
 /// The hash used during proof transcript processing
 pub type TranscriptHash = blake2b_simd::State;
 
+/// Ledger9 uses the KZG backend for its v3 verifier keys. The 0.8.3 stdlib
+/// records the commitment scheme in the key type and serialized key header.
+type LedgerMidnightVK = MidnightVK<midnight_zk_stdlib::KZG>;
+
 /// Proof that a directory's published companions will not change while this
 /// process maps them.
 ///
@@ -331,9 +335,11 @@ impl ParamsProver {
         // whole obligation `Mmap::map` places on us, and it is the reason this
         // function is `unsafe` rather than documented-and-safe.
         let mmap = unsafe { memmap2::Mmap::map(&file)? };
-        Ok(ParamsProver(Arc::new(ParamsKZG::read_mmap_arc(Arc::new(
-            mmap,
-        ))?)))
+        // SAFETY: the caller of `read_mmap_path` owns the immutable-file
+        // guarantee for the lifetime of this mapping and all its clones.
+        Ok(ParamsProver(Arc::new(unsafe {
+            ParamsKZG::read_mmap_arc(Arc::new(mmap))?
+        })))
     }
 
     /// Publish the current params as a companion file at `path`, ready for
@@ -657,7 +663,9 @@ impl CompanionCache {
         // party has its name, and this function holds the only mapping for
         // the duration of the check. The mapping is dropped before the rename.
         let mmap = unsafe { memmap2::Mmap::map(file)? };
-        ParamsKZG::<Bls12>::read_mmap_arc(Arc::new(mmap)).map(|_| ())
+        // SAFETY: the unpublished tempfile is exclusively owned here and is
+        // not modified while the validation mapping is live.
+        unsafe { ParamsKZG::<Bls12>::read_mmap_arc(Arc::new(mmap)) }.map(|_| ())
     }
 
     /// Map a companion this cache published. The soundness argument is the
@@ -670,9 +678,11 @@ impl CompanionCache {
         // construction of this type, which is the invariant `Mmap::map` asks
         // for; the cache directory's write access is the stated trust boundary.
         let mmap = unsafe { memmap2::Mmap::map(file)? };
-        Ok(ParamsProver(Arc::new(ParamsKZG::read_mmap_arc(Arc::new(
-            mmap,
-        ))?)))
+        // SAFETY: this cache only publishes immutable files in a trusted
+        // directory and never rewrites a published inode.
+        Ok(ParamsProver(Arc::new(unsafe {
+            ParamsKZG::read_mmap_arc(Arc::new(mmap))?
+        })))
     }
 
     /// Remove temp files for `file_name` left by a publisher that did not
@@ -1323,8 +1333,8 @@ impl Distribution<VerifierKey> for Standard {
     }
 }
 
-impl From<MidnightVK> for VerifierKey {
-    fn from(vk: MidnightVK) -> Self {
+impl From<LedgerMidnightVK> for VerifierKey {
+    fn from(vk: LedgerMidnightVK) -> Self {
         let mut raw = Vec::new();
         vk.write(&mut raw, SerdeFormat::Processed)
             .expect("in-memory serialize");
@@ -1342,7 +1352,7 @@ pub(crate) enum InnerVerifierKey {
     /// serialization stays a function of the value and does not change when a
     /// key is initialized in place (initialization is shared across clones via
     /// the `Arc<Mutex>`).
-    Initialized(MidnightVK, Vec<u8>),
+    Initialized(LedgerMidnightVK, Vec<u8>),
 }
 
 impl Clone for VerifierKey {
@@ -1455,7 +1465,7 @@ impl VerifierKey {
 
     // warning! This grabs the lock! Make sure to drop the result before re-running!
     #[allow(dead_code)] // Some features don't try to initialize
-    pub(crate) fn force_init(&self) -> Result<MidnightVK, VerifyingError> {
+    pub(crate) fn force_init(&self) -> Result<LedgerMidnightVK, VerifyingError> {
         let mut mutex = self.0.lock().expect("mutex is not poisoned");
         let data = match &*mutex {
             InnerVerifierKey::Initialized(key, _) => {
@@ -1467,7 +1477,7 @@ impl VerifierKey {
             InnerVerifierKey::Uninitialized(data) => data.clone(),
         };
         let mut slice: &[u8] = &data;
-        let vk = MidnightVK::read(&mut slice, SerdeFormat::Processed)
+        let vk = LedgerMidnightVK::read(&mut slice, SerdeFormat::Processed)
             .map_err(|_| anyhow::anyhow!("problem reading the verifier key"))?;
         // Reject keys with unconsumed trailing bytes: two encodings must not map
         // to the same key, and the trailing bytes would otherwise survive in the
@@ -1506,7 +1516,7 @@ impl VerifierKey {
         let vk = self.force_init()?;
         let pi = statement.map(|f| f.0).collect::<Vec<_>>();
         trace!(statement = ?pi, "verifying proof against statement");
-        midnight_zk_stdlib::verify::<DummyRelation, TranscriptHash>(
+        midnight_zk_stdlib::verify::<DummyRelation, TranscriptHash, midnight_zk_stdlib::KZG>(
             &params.0, &vk, &pi, None, &proof.0,
         )
         .map_err(|_| anyhow::anyhow!("Invalid proof"))
@@ -1545,7 +1555,7 @@ impl VerifierKey {
             proofs.push(proof.0.clone());
         }
 
-        batch_verify::<TranscriptHash>(&params.0, &vks, &pis, &proofs)
+        batch_verify::<TranscriptHash, midnight_zk_stdlib::KZG>(&params.0, &vks, &pis, &proofs)
             .map_err(|_| anyhow::anyhow!("Invalid proof"))
     }
 
