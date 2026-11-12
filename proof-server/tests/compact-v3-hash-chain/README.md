@@ -64,6 +64,18 @@ observations including setup and both proving arms. They do not establish
 per-arm peak memory, throughput, or an upper bound on spill files between
 samples.
 
+The later explicit key-policy route was measured once at Ledger `0aea7392`,
+ZKIR `f928517`, stdlib `bb67a88b`, and the same pinned proofs 0.8.2 SHA,
+with the same host and forced-spill script. The verified 5,392-byte proof
+required 7.49 s for the heap-parameter arm and 8.01 s for the mapped-parameter
+arm. `wait4` recorded 1,314,029,568 bytes whole-process peak RSS; sampling
+observed 1,283,232 KiB RSS and 41,943,040 bytes in two unique live spill
+files over 189 samples. The explicit path now reloads the serialized key under
+its own policy. This test first proves with a heap key and retains its
+initialized resolver key, so its process peak cannot isolate the mapped key's
+memory effect or establish a comparable one-arm baseline. The one-run timing
+suggests a key-load cost and does not establish a throughput distribution.
+
 To repeat the measurement, build the ignored test with `--no-run`,
 `--features zkir3-context`, and the two Cargo path patches from
 `docs/ledger9-local-sync.md`. Pass the printed test executable path to
