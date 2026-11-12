@@ -904,6 +904,22 @@ lazy_static! {
         Mutex::new(LruCache::new(NonZeroUsize::new(PK_CACHE_SIZE).unwrap()));
     static ref PK_POLICY_CACHE: Mutex<VecDeque<PolicyKeyCacheEntry>> =
         Mutex::new(VecDeque::with_capacity(PK_POLICY_CACHE_SIZE));
+    // Admit one explicit-policy key build at a time. Cache hits do not wait.
+    static ref PK_POLICY_BUILD_LOCK: Mutex<()> = Mutex::new(());
+}
+
+fn cached_policy_key<T: Zkir>(
+    cache: &mut VecDeque<PolicyKeyCacheEntry>,
+    hash: &HashOutput,
+    policy: &ProverConfig,
+) -> Option<Arc<T::ProverKey>> {
+    let index = cache.iter().position(|entry| {
+        &entry.hash == hash && entry.type_id == TypeId::of::<T>() && entry.policy == *policy
+    })?;
+    let entry = cache.remove(index).expect("cache index exists");
+    let key = entry.key.clone().downcast::<T::ProverKey>().ok();
+    cache.push_front(entry);
+    key
 }
 
 impl<T: Zkir> InnerProverKey<T> {
@@ -971,7 +987,9 @@ impl<T: Zkir> ProverKey<T> {
     /// state or using the bytes-only process cache. A subsequent request with
     /// another policy must not inherit this request's storage decisions.
     /// The separate policy cache retains at most one initialized key, including
-    /// any mapped files it owns. Concurrent misses may still build in parallel.
+    /// any mapped files it owns. A process-wide build gate prevents concurrent
+    /// misses from constructing multiple keys at once; waiting for that gate
+    /// is not yet cancellation-aware.
     pub fn init_with_policy(
         &self,
         policy: &ProverConfig,
@@ -989,27 +1007,31 @@ impl<T: Zkir> ProverKey<T> {
             }
         };
         let hash = persistent_hash(&data[..]);
-        let type_id = TypeId::of::<T>();
         if let Ok(mut cache) = PK_POLICY_CACHE.lock() {
-            if let Some(index) = cache.iter().position(|entry| {
-                entry.hash == hash && entry.type_id == type_id && entry.policy == *policy
-            }) {
-                let entry = cache.remove(index).expect("cache index exists");
-                let key = entry.key.clone().downcast::<T::ProverKey>().ok();
-                cache.push_front(entry);
-                if let Some(key) = key {
-                    return Ok(key);
-                }
+            if let Some(key) = cached_policy_key::<T>(&mut cache, &hash, policy) {
+                return Ok(key);
+            }
+        }
+        // The gate carries no data, so a previous builder's panic does not
+        // invalidate it. Recover the lock and let the next request retry.
+        let _build = PK_POLICY_BUILD_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // A prior waiter may have populated the cache while this request was
+        // waiting at the build gate.
+        if let Ok(mut cache) = PK_POLICY_CACHE.lock() {
+            if let Some(key) = cached_policy_key::<T>(&mut cache, &hash, policy) {
+                return Ok(key);
             }
         }
         let key = Arc::new(T::read_raw_pk_with_policy(&data[..], policy)?);
         if let Ok(mut cache) = PK_POLICY_CACHE.lock() {
             cache.retain(|entry| {
-                entry.hash != hash || entry.type_id != type_id || entry.policy != *policy
+                entry.hash != hash || entry.type_id != TypeId::of::<T>() || entry.policy != *policy
             });
             cache.push_front(PolicyKeyCacheEntry {
                 hash,
-                type_id,
+                type_id: TypeId::of::<T>(),
                 policy: policy.clone(),
                 key: key.clone(),
             });
