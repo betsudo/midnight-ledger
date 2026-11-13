@@ -878,6 +878,10 @@ pub(crate) enum InnerProverKey<T: Zkir> {
     Uninitialized(Arc<Vec<u8>>),
     Invalid(Arc<Vec<u8>>),
     Initialized(Arc<T::ProverKey>),
+    /// A freshly generated key whose process policy is known. Keep this
+    /// distinct from a legacy-initialized key whose storage provenance is
+    /// unknown to an explicit request.
+    GeneratedUnderProcessPolicy(Arc<T::ProverKey>, ProverConfig),
 }
 
 impl<T: Zkir + Tagged> Tagged for ProverKey<T> {
@@ -1049,12 +1053,27 @@ impl<T: Zkir> ProverKey<T> {
         )))))
     }
 
+    /// Wrap a key produced by key generation under the process memory policy.
+    /// This provenance lets a matching heap request reuse the key directly.
+    /// A mapped-key request still needs a serialized key read under that
+    /// request's policy, since key generation leaves its polynomial fields on
+    /// the heap even when it defers proof-time cosets.
+    pub fn from_raw_under_process_policy(raw: T::ProverKey) -> Self {
+        ProverKey(Arc::new(Mutex::new(
+            InnerProverKey::GeneratedUnderProcessPolicy(
+                Arc::new(raw),
+                ProverConfig::process().clone(),
+            ),
+        )))
+    }
+
     /// Initializes the lazy prover key
     pub fn init(&self) -> Result<Arc<T::ProverKey>, ProvingError> {
         let mut mutex = self.0.lock().expect("mutex is not poisoned");
         mutex.try_cache();
         let data = match &*mutex {
-            InnerProverKey::Initialized(key) => {
+            InnerProverKey::Initialized(key)
+            | InnerProverKey::GeneratedUnderProcessPolicy(key, _) => {
                 return Ok(key.clone());
             }
             InnerProverKey::Invalid(_) => {
@@ -1125,6 +1144,17 @@ impl<T: Zkir> ProverKey<T> {
                 InnerProverKey::Invalid(_) => {
                     return Err(anyhow::anyhow!("known invalid prover key"));
                 }
+                InnerProverKey::GeneratedUnderProcessPolicy(key, keygen_policy)
+                    if !policy.map_prover_key && policy == keygen_policy =>
+                {
+                    check_key_cancelled(context, "prover_key.generated")?;
+                    return Ok(key.clone());
+                }
+                InnerProverKey::GeneratedUnderProcessPolicy(_, _) => {
+                    return Err(anyhow::anyhow!(
+                        "generated prover key cannot honor this request's memory policy; serialize and reload it under the requested policy"
+                    ));
+                }
                 InnerProverKey::Initialized(_) => {
                     return Err(anyhow::anyhow!(
                         "explicit memory policy requires a serialized prover key"
@@ -1158,7 +1188,7 @@ impl<T: Zkir> ProverKey<T> {
             InnerProverKey::Invalid(_) => {
                 return Err(anyhow::anyhow!("known invalid prover key"));
             }
-            InnerProverKey::Initialized(_) => {
+            InnerProverKey::Initialized(_) | InnerProverKey::GeneratedUnderProcessPolicy(_, _) => {
                 return Err(anyhow::anyhow!(
                     "explicit memory policy requires a serialized prover key"
                 ));
@@ -1223,7 +1253,8 @@ impl<T: Zkir> ProverKey<T> {
         let arc_pk = {
             let mutex = self.0.lock().expect("mutex not poisoned");
             match &*mutex {
-                InnerProverKey::Initialized(key) => key.clone(),
+                InnerProverKey::Initialized(key)
+                | InnerProverKey::GeneratedUnderProcessPolicy(key, _) => key.clone(),
                 _ => return Ok(false),
             }
         };
@@ -1253,7 +1284,10 @@ impl<T: Zkir> ProverKey<T> {
                 writer.write_all(data)?;
                 Ok(())
             }
-            InnerProverKey::Initialized(key) => T::write_raw_pk(&mut writer, key),
+            InnerProverKey::Initialized(key)
+            | InnerProverKey::GeneratedUnderProcessPolicy(key, _) => {
+                T::write_raw_pk(&mut writer, key)
+            }
         }
     }
 }
