@@ -70,9 +70,15 @@ async fn released_v3_proof_and_key_remain_usable() {
     ] {
         assert_eq!(actual, expected, "released serialization roundtrip");
     }
+    assert!(tagged_deserialize::<Proof>(&mut &PROOF[..PROOF.len() - 1]).is_err());
+    assert!(tagged_deserialize::<ProverKey<IrSource>>(&mut &PK[..PK.len() - 1]).is_err());
     let verifier_params = ParamsVerifier::read(PARAMS).expect("released verifier params");
     vk.verify(&verifier_params, &proof, [42.into()].into_iter())
         .expect("released proof verifies with released key");
+    assert!(
+        vk.verify(&verifier_params, &proof, [43.into()].into_iter())
+            .is_err()
+    );
 
     let prover_params =
         ParamsKZG::<Bls12>::read_custom(&mut &PARAMS[..], SerdeFormat::RawBytesUnchecked)
