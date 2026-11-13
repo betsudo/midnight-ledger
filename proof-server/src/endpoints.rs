@@ -94,12 +94,12 @@ impl CancelOnDrop {
 impl Drop for CancelOnDrop {
     fn drop(&mut self) {
         self.token.cancel();
-        if let Some((pool, id)) = self.queued_job.take() {
-            if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                handle.spawn(async move {
-                    let _ = pool.cancel(id).await;
-                });
-            }
+        if let Some((pool, id)) = self.queued_job.take()
+            && let Ok(handle) = tokio::runtime::Handle::try_current()
+        {
+            handle.spawn(async move {
+                let _ = pool.cancel(id).await;
+            });
         }
     }
 }

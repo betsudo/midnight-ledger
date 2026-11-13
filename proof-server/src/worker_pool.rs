@@ -199,9 +199,7 @@ impl Requests {
     /// must not start work after a pending request has been cancelled.
     async fn try_start(&self, id: Uuid) -> Option<Work> {
         let mut reqs = self.reqs.lock().await;
-        let Some(job) = reqs.get_mut(&id) else {
-            return None;
-        };
+        let job = reqs.get_mut(&id)?;
         if !matches!(job.status, JobStatus::Pending) {
             return None;
         }

@@ -546,8 +546,8 @@ The remote proposal keeps the released 0.8.2 and legacy V0/V1 histories
 intact, then merges the upstream `ledger-9` snapshot `0978af43` plus its
 `quinn-udp` audit repair `bca21ca7`. This branch pins the optimized ZK
 proofs 0.8.4, curves 0.3.2, circuits 7.3.1 and stdlib 2.5.0 to betsudo
-`763bfbc1e38b202153c20063b108f04e10140ad7`; external ZKIR v3 3.3.0
-is pinned to betsudo `614dadc171e863f1a964ea19bb5df452a4e61034`.
+`32de75927f655dba0d13db53e8777c3e3bd9d5b0`; external ZKIR v3 3.3.0
+is pinned to betsudo `084855df972bd24782d636816e8b28c8fe9e8ad6`.
 The in-tree transient-crypto 3.2.0 remains the single Ledger9 adapter source.
 The root lockfile resolves one proofs 0.8.4 source for the current v2/v3
 stack; proofs 0.7.3 remains only for the older compatibility stack. The

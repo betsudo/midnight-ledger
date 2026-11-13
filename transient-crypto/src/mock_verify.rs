@@ -356,7 +356,7 @@ impl Relation for TestIr {
 }
 
 impl Zkir for TestIr {
-    type ProverKey = MidnightPK<TestIr>;
+    type ProverKey = MidnightPK<TestIr, midnight_zk_stdlib::KZG>;
 
     fn check(&self, _preimage: &ProofPreimage) -> Result<Vec<Option<usize>>, ProvingError> {
         Ok(vec![])
@@ -372,8 +372,14 @@ impl Zkir for TestIr {
         let params_k = params.get_params(pk.init()?.k()).await?;
         let pis = preimage.public_transcript_inputs.clone();
         let pk = pk.init().unwrap();
-        let proof =
-            prove::<_, TranscriptHash>(params_k.as_ref(), &pk, self, &pis, self.clone(), rng)?;
+        let proof = prove::<_, TranscriptHash, midnight_zk_stdlib::KZG>(
+            params_k.as_ref(),
+            &pk,
+            self,
+            &pis,
+            self.clone(),
+            rng,
+        )?;
         Ok((
             Proof(proof),
             preimage.public_transcript_inputs.clone(),
@@ -411,7 +417,7 @@ impl Zkir for TestIr {
         tagged_deserialize(reader)
     }
     fn read_raw_pk(reader: impl std::io::Read) -> std::io::Result<Self::ProverKey> {
-        MidnightPK::<Self>::read(
+        MidnightPK::<Self, midnight_zk_stdlib::KZG>::read(
             &mut { reader },
             midnight_proofs::utils::SerdeFormat::RawBytesUnchecked,
         )

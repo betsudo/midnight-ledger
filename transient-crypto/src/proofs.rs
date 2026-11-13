@@ -1188,21 +1188,21 @@ impl<T: Zkir> ProverKey<T> {
             }
         };
         let hash = persistent_hash(&data[..]);
-        if let Ok(mut cache) = PK_POLICY_CACHE.lock() {
-            if let Some(key) = cached_policy_key::<T>(&mut cache, &hash, policy) {
-                check_key_cancelled(context, "prover_key.cache")?;
-                return Ok(key);
-            }
+        if let Ok(mut cache) = PK_POLICY_CACHE.lock()
+            && let Some(key) = cached_policy_key::<T>(&mut cache, &hash, policy)
+        {
+            check_key_cancelled(context, "prover_key.cache")?;
+            return Ok(key);
         }
         let _build = lock_with_context(&PK_POLICY_BUILD_LOCK, context, "prover_key.wait")?;
         check_key_cancelled(context, "prover_key.wait")?;
         // A prior waiter may have populated the cache while this request was
         // waiting at the build gate.
-        if let Ok(mut cache) = PK_POLICY_CACHE.lock() {
-            if let Some(key) = cached_policy_key::<T>(&mut cache, &hash, policy) {
-                check_key_cancelled(context, "prover_key.cache")?;
-                return Ok(key);
-            }
+        if let Ok(mut cache) = PK_POLICY_CACHE.lock()
+            && let Some(key) = cached_policy_key::<T>(&mut cache, &hash, policy)
+        {
+            check_key_cancelled(context, "prover_key.cache")?;
+            return Ok(key);
         }
         // A legacy initializer can change this key's state while we wait at
         // the global gate. Recheck under the key lock and hold it only for the

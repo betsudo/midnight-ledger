@@ -61,9 +61,7 @@ async fn prove_endpoint_accepts_v3_with_mapped_params() {
     let params = if let Some(path) = std::env::var_os("MIDNIGHT_LEDGER_TEST_CEREMONY_SRS") {
         let file = std::fs::File::open(path).expect("open ceremony SRS");
         let loaded = ParamsProver::read(file).expect("read ceremony SRS through Ledger9");
-        let mut params = Arc::try_unwrap(loaded.0)
-            .ok()
-            .expect("freshly loaded SRS must have one owner");
+        let mut params = Arc::try_unwrap(loaded.0).expect("freshly loaded SRS must have one owner");
         assert!(params.max_k() >= k as u32);
         if full_ceremony_k {
             assert_eq!(params.max_k(), 14, "full-k gate expects Ledger9's k=14 SRS");

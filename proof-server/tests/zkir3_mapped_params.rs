@@ -649,9 +649,7 @@ async fn exercise_heap_and_mapped(
         // self-contained when the environment variable is absent.
         let file = std::fs::File::open(path).expect("open ceremony SRS");
         let loaded = ParamsProver::read(file).expect("read ceremony SRS through Ledger9");
-        let mut params = Arc::try_unwrap(loaded.0)
-            .ok()
-            .expect("freshly loaded SRS must have one owner");
+        let mut params = Arc::try_unwrap(loaded.0).expect("freshly loaded SRS must have one owner");
         assert!(params.max_k() >= k as u32);
         params.downsize(k as u32);
         ParamsProver(Arc::new(params))

@@ -68,16 +68,16 @@ midnight-serialize = { path = "serialize" }
 # midnight-zkir v3 asks crates.io for transient-crypto ^3.0.0; resolve it to
 # the in-tree copy so both share one set of types.
 midnight-transient-crypto = { path = "transient-crypto" }
-midnight-curves = { git = "https://github.com/betsudo/midnight-zk.git", rev = "763bfbc1e38b202153c20063b108f04e10140ad7" }
-midnight-circuits = { git = "https://github.com/betsudo/midnight-zk.git", rev = "763bfbc1e38b202153c20063b108f04e10140ad7" }
-midnight-proofs = { git = "https://github.com/betsudo/midnight-zk.git", rev = "763bfbc1e38b202153c20063b108f04e10140ad7" }
-midnight-zk-stdlib = { git = "https://github.com/betsudo/midnight-zk.git", rev = "763bfbc1e38b202153c20063b108f04e10140ad7" }
-midnight-zkir = { git = "https://github.com/betsudo/midnight-zkir.git", rev = "614dadc171e863f1a964ea19bb5df452a4e61034" }
+midnight-curves = { git = "https://github.com/betsudo/midnight-zk.git", rev = "32de75927f655dba0d13db53e8777c3e3bd9d5b0" }
+midnight-circuits = { git = "https://github.com/betsudo/midnight-zk.git", rev = "32de75927f655dba0d13db53e8777c3e3bd9d5b0" }
+midnight-proofs = { git = "https://github.com/betsudo/midnight-zk.git", rev = "32de75927f655dba0d13db53e8777c3e3bd9d5b0" }
+midnight-zk-stdlib = { git = "https://github.com/betsudo/midnight-zk.git", rev = "32de75927f655dba0d13db53e8777c3e3bd9d5b0" }
+midnight-zkir = { git = "https://github.com/betsudo/midnight-zkir.git", rev = "084855df972bd24782d636816e8b28c8fe9e8ad6" }
 
 # sha3-circuit names upstream ZK as a Git source. Bind it to the same proof
 # commit so the graph cannot silently mix proof implementations.
 [patch."https://github.com/midnightntwrk/midnight-zk"]
-midnight-proofs = { git = "https://github.com/betsudo/midnight-zk.git", rev = "763bfbc1e38b202153c20063b108f04e10140ad7" }
+midnight-proofs = { git = "https://github.com/betsudo/midnight-zk.git", rev = "32de75927f655dba0d13db53e8777c3e3bd9d5b0" }
 
 [workspace.metadata.spellcheck]
 config = ".spellcheck/cargo-spellcheck.toml"
