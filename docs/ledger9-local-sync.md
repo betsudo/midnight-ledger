@@ -238,3 +238,18 @@ plus `MIDNIGHT_SPILL_COSETS=1`, `MIDNIGHT_SPILL_FLOOR_K=0`, and
 `MIDNIGHT_BENCH_REQUIRE_SPILL=1` to require the streamed coset path. This
 checks one local HTTP proof, not a full-k=14 proof, disconnect cancellation,
 concurrent load, or a released-package build.
+
+The local keygen-policy follow-up uses ZK `sync/zkstdlib-083-keygen-policy`
+`962bb214` and external ZKIR `sync/zkir-083-keygen-policy` `e0e08f7`, with
+this Ledger consumer based on `59963463`. It adds an opt-in
+`Zkir::keygen_with_policy` entry point; the old `keygen` API and the released
+Ledger9 proofs 0.8.2 pin are unchanged. The `zkir3_mapped_params` suite passed
+seven non-ignored tests against temporary local path patches, including
+same-byte key generation, an explicit mapping failure, and existing v3 proof
+and cancellation checks. The Compact k=18 / 147,048-row fixture verified a
+4,164-byte proof with both heap and mapped keygen while keeping the proving
+policy constant. On the single Apple M2 Max pair, sampled keygen RSS was
+3,270,160 versus 2,934,336 KiB, sampled mapped-keygen spill was 721,420,288
+bytes, and keygen took 14.03 versus 23.16 seconds. Raw samples and caveats
+are in `proof-server/tests/compact-v3-hash-chain-k18/README.md`. This is a
+local source and synthetic-SRS result, not a published-package or CI gate.

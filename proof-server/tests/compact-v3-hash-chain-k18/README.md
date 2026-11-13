@@ -112,3 +112,35 @@ generation and keygen before its marked proof phase; whole-process peaks
 cannot be attributed solely to proof execution. These three samples do not
 qualify production SRS or load, disk capacity, or a default coset-spill policy
 change.
+
+## Explicit ZKIR v3 keygen policy probe (local 0.8.3 stack)
+
+The later local candidate exposes an opt-in `Zkir::keygen_with_policy` through
+ZKIR v3 and zk-stdlib. The compatibility `keygen` entry point remains in place.
+The same Compact k=18 / 147,048-row fixture ran once per keygen policy on the
+Apple M2 Max host above (macOS 26.2, Cargo test profile). Both arms used
+synthetic seeded parameters and the **same mapped-key plus coset-spill proof
+policy**, and both proofs verified at 4,164 bytes. The sampler now marks
+keygen separately after SRS setup and observes its configured spill directory.
+
+```sh
+python3 proof-server/tests/compact-v3-hash-chain/measure_context.py <test-binary> \
+  --policy mapped --test-name compact_generated_zkir3_hash_chain_k18_context_only
+python3 proof-server/tests/compact-v3-hash-chain/measure_context.py <test-binary> \
+  --policy mapped --keygen-mapped \
+  --test-name compact_generated_zkir3_hash_chain_k18_context_only
+```
+
+| Keygen policy | Keygen seconds | Sampled keygen peak RSS (KiB) | Sampled live keygen spill (bytes) | Whole-process peak RSS (bytes) |
+| --- | ---: | ---: | ---: | ---: |
+| heap | 14.03 | 3,270,160 | 0 | 4,977,229,824 |
+| mapped | 23.16 | 2,934,336 | 721,420,288 | 4,810,047,488 |
+
+The raw results are `proofs-083-heap-keygen-mapped-proof.json` and
+`proofs-083-mapped-keygen-mapped-proof.json`. Mapped keygen saved 335,824 KiB
+of sampled keygen RSS in this pair, with about 9.1 seconds more keygen time.
+The whole-process peak includes setup and proving, and RSS includes file-backed
+mapped pages. Live spill is sampled file length, not physical memory or final
+disk usage. One run per arm does not establish repeatable latency, production
+SRS behavior, or a release default. These source branches remain local; the
+released Ledger9 dependency pin stays on optimized proofs 0.8.2.

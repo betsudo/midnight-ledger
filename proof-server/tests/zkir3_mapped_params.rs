@@ -173,9 +173,31 @@ async fn explicit_key_cache_reuses_only_the_same_policy() {
         ir.k() as u32,
         ChaCha20Rng::from_seed([9; 32]),
     )));
-    let (generated, _) = ir.keygen(&HeapParams(params)).await.expect("keygen");
+    let (generated, _) = ir
+        .keygen(&HeapParams(params.clone()))
+        .await
+        .expect("keygen");
     let mut bytes = Vec::new();
     tagged_serialize(&generated, &mut bytes).expect("serialize key");
+    let keygen_dir = tempfile::tempdir().expect("mapped keygen directory");
+    let mut keygen_policy = ProverConfig::mapped_key();
+    keygen_policy.spill_dir = Some(keygen_dir.path().to_path_buf());
+    let (mapped_generated, _) = ir
+        .keygen_with_policy(&HeapParams(params.clone()), &keygen_policy)
+        .await
+        .expect("mapped ZKIR v3 keygen");
+    let mut mapped_bytes = Vec::new();
+    tagged_serialize(&mapped_generated, &mut mapped_bytes).expect("serialize mapped key");
+    assert_eq!(mapped_bytes, bytes, "keygen policy must preserve key bytes");
+    assert_eq!(keygen_dir.path().read_dir().unwrap().count(), 0);
+    let mut unavailable = keygen_policy.clone();
+    unavailable.spill_dir = Some("/nonexistent-midnight-keygen-dir/for-this-test".into());
+    assert!(
+        ir.keygen_with_policy(&HeapParams(params), &unavailable)
+            .await
+            .is_err(),
+        "an explicit mapped-key failure must reach the ZKIR caller"
+    );
     generated.warm_pk_cache().expect("warm legacy cache");
     let legacy_key = generated.init().expect("initialized generated key");
 
@@ -352,8 +374,32 @@ async fn prove_hash_chain_context_only(ir: IrSource, expected_k: u8, expected_ro
     let verifier_params = ParamsVerifier::read(&params_bytes[..]).expect("verifier params");
     drop(params_bytes);
 
+    let spill_dir = tempfile::tempdir().expect("private spill dir");
+    let phase_file = std::env::var_os("MIDNIGHT_BENCH_PHASE_FILE").map(PathBuf::from);
+    let keygen_mapped = std::env::var("MIDNIGHT_BENCH_KEYGEN_MAPPED").as_deref() == Ok("1");
+    let mut keygen_policy = if keygen_mapped {
+        ProverConfig::mapped_key()
+    } else {
+        ProverConfig::heap()
+    };
+    keygen_policy.spill_dir = Some(
+        std::env::var_os("MIDNIGHT_SPILL_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| spill_dir.path().to_path_buf()),
+    );
+    if let Some(path) = &phase_file {
+        std::fs::write(path, "keygen").expect("mark keygen phase");
+    }
     let heap = HeapParams(params.clone());
-    let (pk, vk) = ir.keygen(&heap).await.expect("v3 keygen");
+    let keygen_start = Instant::now();
+    let (pk, vk) = ir
+        .keygen_with_policy(&heap, &keygen_policy)
+        .await
+        .expect("v3 keygen with explicit storage policy");
+    let keygen_elapsed = keygen_start.elapsed();
+    if let Some(path) = &phase_file {
+        std::fs::write(path, "setup").expect("mark post-keygen setup phase");
+    }
     drop(heap);
     let key_dir = tempfile::tempdir().expect("private key dir");
     let prover_key_path = key_dir.path().join("prover.key");
@@ -379,7 +425,6 @@ async fn prove_hash_chain_context_only(ir: IrSource, expected_k: u8, expected_ro
         .open_or_build(&MidnightDataProvider::name_k(k), || Ok(params))
         .expect("publish companion");
     let mapped = MappedParams::new(NoFallback, trusted);
-    let spill_dir = tempfile::tempdir().expect("private spill dir");
     let heap_key = std::env::var("MIDNIGHT_BENCH_HEAP_KEY").as_deref() == Ok("1");
     let spill_cosets = std::env::var("MIDNIGHT_BENCH_NO_COSET_SPILL").as_deref() != Ok("1");
     let spill_floor_k = std::env::var("MIDNIGHT_BENCH_SPILL_FLOOR_K")
@@ -412,7 +457,6 @@ async fn prove_hash_chain_context_only(ir: IrSource, expected_k: u8, expected_ro
         public_transcript_outputs: vec![],
         key_location: KeyLocation(Cow::Borrowed("test")),
     };
-    let phase_file = std::env::var_os("MIDNIGHT_BENCH_PHASE_FILE").map(PathBuf::from);
     if let Some(path) = &phase_file {
         std::fs::write(path, "prove").expect("mark proof phase");
     }
@@ -439,7 +483,7 @@ async fn prove_hash_chain_context_only(ir: IrSource, expected_k: u8, expected_ro
         std::fs::write(path, "done").expect("mark completed proof");
     }
     eprintln!(
-        "v3 context-only hash chain k={k} rows={rows} heap_key={heap_key} spill_cosets={spill_cosets} spill_floor_k={spill_floor_k} proof={prove_elapsed:?} bytes={}",
+        "v3 context-only hash chain k={k} rows={rows} keygen_mapped={keygen_mapped} keygen={keygen_elapsed:?} heap_key={heap_key} spill_cosets={spill_cosets} spill_floor_k={spill_floor_k} proof={prove_elapsed:?} bytes={}",
         proof.0.len()
     );
 }

@@ -80,6 +80,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary", type=Path, help="compiled zkir3_mapped_params test binary")
     parser.add_argument("--policy", choices=("heap", "mapped"), required=True)
+    parser.add_argument("--keygen-mapped", action="store_true", help="map phase-0 keygen columns")
     parser.add_argument("--no-coset-spill", action="store_true")
     parser.add_argument("--vmmap", action="store_true", help="sample physical footprint; perturbs timing")
     parser.add_argument("--test-name", default="compact_generated_zkir3_hash_chain_context_only")
@@ -105,6 +106,7 @@ def main() -> int:
         env["MIDNIGHT_BENCH_PHASE_FILE"] = str(phase_file)
         env["MIDNIGHT_SPILL_DIR"] = str(spill_dir)
         env["MIDNIGHT_BENCH_HEAP_KEY"] = "1" if args.policy == "heap" else "0"
+        env["MIDNIGHT_BENCH_KEYGEN_MAPPED"] = "1" if args.keygen_mapped else "0"
         env["MIDNIGHT_BENCH_NO_COSET_SPILL"] = "1" if args.no_coset_spill else "0"
         env["MIDNIGHT_BENCH_SPILL_FLOOR_K"] = "0"
         command = [str(args.binary), args.test_name, "--ignored", "--exact", "--nocapture"]
@@ -112,6 +114,8 @@ def main() -> int:
         samples: dict[str, int] = {}
         peak_spill_bytes = 0
         spill_samples = 0
+        peak_keygen_spill_bytes = 0
+        keygen_spill_samples = 0
         footprint_samples: list[tuple[int, int]] = []
         start = time.monotonic()
         with log_file.open("w") as log:
@@ -125,11 +129,15 @@ def main() -> int:
                     peaks[phase] = max(peaks.get(phase, 0), rss)
                     samples[phase] = samples.get(phase, 0) + 1
                 now = time.monotonic()
-                if phase == "prove" and now >= next_lsof:
+                if phase in ("keygen", "prove") and now >= next_lsof:
                     observed = spill_bytes(proc.pid, spill_dir)
                     if observed is not None:
-                        peak_spill_bytes = max(peak_spill_bytes, observed)
-                        spill_samples += 1
+                        if phase == "keygen":
+                            peak_keygen_spill_bytes = max(peak_keygen_spill_bytes, observed)
+                            keygen_spill_samples += 1
+                        else:
+                            peak_spill_bytes = max(peak_spill_bytes, observed)
+                            spill_samples += 1
                     next_lsof = now + 0.1
                 if phase == "prove" and args.vmmap and now >= next_vmmap:
                     footprint = physical_footprint_bytes(proc.pid)
@@ -143,6 +151,7 @@ def main() -> int:
         result = {
             "host": platform.platform(),
             "policy": args.policy,
+            "keygen_mapped": args.keygen_mapped,
             "spill_cosets": not args.no_coset_spill,
             "test": args.test_name,
             "exit_code": returncode,
@@ -152,6 +161,8 @@ def main() -> int:
             "rss_samples_by_phase": samples,
             "sampled_peak_spill_bytes_during_prove": peak_spill_bytes,
             "spill_samples_during_prove": spill_samples,
+            "sampled_peak_spill_bytes_during_keygen": peak_keygen_spill_bytes,
+            "spill_samples_during_keygen": keygen_spill_samples,
             "vmmap_footprint_samples_bytes": footprint_samples,
             "test_output": output,
         }
@@ -165,6 +176,7 @@ def main() -> int:
             and "running 1 test" in output
             and "test result: ok" in output
             and samples.get("prove", 0) > 0
+            and (not args.keygen_mapped or samples.get("keygen", 0) > 0)
             else 1
         )
 

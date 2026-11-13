@@ -834,6 +834,19 @@ pub trait Zkir: Any + Send + Sync + Debug + Sized {
         params: &impl ParamsProverProvider,
     ) -> Result<(ProverKey<Self>, VerifierKey), anyhow::Error>;
 
+    /// Generate a prover/verifier key pair under an explicit storage policy.
+    /// Implementations must opt in so a requested mapping is never ignored.
+    /// The compatibility `keygen` method retains its original behavior.
+    async fn keygen_with_policy(
+        &self,
+        _params: &impl ParamsProverProvider,
+        _policy: &ProverConfig,
+    ) -> Result<(ProverKey<Self>, VerifierKey), anyhow::Error> {
+        Err(anyhow::anyhow!(
+            "explicit keygen memory policy is not supported by this ZKIR"
+        ))
+    }
+
     /// Loads IR from a tagged serialization. Separated from `Deserializable` to allow for
     /// backwards-compatible deserialization of old variants.
     fn load_ir_from_tagged(reader: impl Read + Seek) -> io::Result<Self>;
