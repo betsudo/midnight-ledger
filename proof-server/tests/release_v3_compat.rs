@@ -4,6 +4,7 @@
 
 use std::{borrow::Cow, io, sync::Arc};
 
+use base_crypto::data_provider::MidnightDataProvider;
 use midnight_curves::Bls12;
 use midnight_proofs::{
     config::{ProverConfig, ProverContext},
@@ -14,8 +15,9 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use serialize::{tagged_deserialize, tagged_serialize};
 use transient_crypto::proofs::{
-    KeyLocation, ParamsProver, ParamsProverProvider, ParamsVerifier, Proof, ProofPreimage,
-    ProverKey, ProvingKeyMaterial, Resolver, VerifierKey,
+    CompanionCache, KeyLocation, MappedParams, ParamsProver, ParamsProverProvider, ParamsVerifier,
+    Proof, ProofPreimage, ProverKey, ProvingKeyMaterial, Resolver, TrustedParamsDir, VerifierKey,
+    Zkir,
 };
 use zkir_v3::IrSource;
 
@@ -34,6 +36,14 @@ impl ParamsProverProvider for ReleaseParams {
 }
 
 struct ReleaseKeys;
+
+struct NoFallback;
+
+impl ParamsProverProvider for NoFallback {
+    async fn get_params(&self, _k: u8) -> io::Result<ParamsProver> {
+        panic!("released companion must be mapped without a heap fallback")
+    }
+}
 
 impl Resolver for ReleaseKeys {
     async fn resolve_key(&self, key: KeyLocation) -> io::Result<Option<ProvingKeyMaterial>> {
@@ -88,6 +98,37 @@ async fn released_v3_proof_and_key_remain_usable() {
         .expect("current branch proves with released key material");
     vk.verify(&verifier_params, &new_proof, [42.into()].into_iter())
         .expect("released verifier key accepts current proof");
+
+    let dir = tempfile::tempdir().expect("private companion and spill directory");
+    // This test alone owns the directory. The cache publishes its companion
+    // without clobbering and no writer can alter it while the mapping lives.
+    let trusted = unsafe { TrustedParamsDir::new(dir.path()) };
+    let cache = CompanionCache::from_trusted_dir(trusted.clone());
+    cache
+        .open_or_build(&MidnightDataProvider::name_k(ir.k()), || {
+            Ok(params.0.clone())
+        })
+        .expect("publish released parameters as an immutable companion");
+    let mapped = MappedParams::new(NoFallback, trusted);
+    let mut policy = ProverConfig::mapped_key_and_cosets();
+    policy.coset_spill_floor_k = 0;
+    policy.spill_dir = Some(dir.path().to_path_buf());
+    assert!(policy.spills_cosets_at(ir.k() as u32));
+    let (mapped_proof, _) = preimage
+        .prove_with_context::<IrSource>(
+            ChaCha20Rng::from_seed([42; 32]),
+            &mapped,
+            &ReleaseKeys,
+            &ProverContext::new(policy),
+        )
+        .await
+        .expect("released key proves with mapped parameters and forced spill");
+    vk.verify(&verifier_params, &mapped_proof, [42.into()].into_iter())
+        .expect("released verifier key accepts mapped and spilled proof");
+    assert_eq!(
+        new_proof, mapped_proof,
+        "proof bytes must be policy independent"
+    );
 }
 
 fn tagged<T: serialize::Serializable + serialize::Tagged>(value: &T) -> Vec<u8> {
