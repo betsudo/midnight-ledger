@@ -1,0 +1,285 @@
+{
+  "description": "Single-process Compact ZKIR v3 k=15, 32,185-row local proofs 0.8.3 memory probe; one run per policy, plus separate vmmap diagnostic runs",
+  "proofs_commit": "7ecf7190ba680808d7a04a0323adb2b713c25f0c",
+  "zkir_commit": "ead311c457a1bd292f55b3890ecc3f18db47cc31",
+  "ledger_test_commit": "705f5216f4afa6bd78db10e5d4f9a24eddd5426c",
+  "test_binary_sha256": "17a228b0217e29fd254f226cb27bffb9d596e7974705cb722c017cb50379ffa6",
+  "macos_version": "26.2",
+  "hardware_model": "Mac14,5",
+  "memory_bytes": 103079215104,
+  "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+  "runs": {
+    "heap": {
+      "host": "macOS-26.2-arm64-arm-64bit-Mach-O",
+      "policy": "heap",
+      "spill_cosets": false,
+      "test": "compact_generated_zkir3_hash_chain_context_only",
+      "exit_code": 0,
+      "wall_seconds": 10.574,
+      "sampled_peak_rss_kib_by_phase": {
+        "setup": 462944,
+        "prove": 626368
+      },
+      "rss_samples_by_phase": {
+        "setup": 181,
+        "prove": 51
+      },
+      "sampled_peak_spill_bytes_during_prove": 0,
+      "spill_samples_during_prove": 42,
+      "test_output": "\nrunning 1 test\nv3 context-only hash chain k=15 rows=32185 heap_key=true spill_cosets=false spill_floor_k=0 proof=4.932464542s bytes=4164\ntest compact_generated_zkir3_hash_chain_context_only ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 8.89s\n\n",
+      "rusage_children_peak_rss_bytes": 641400832,
+      "vmmap_enabled": false
+    },
+    "mapped_no_spill": {
+      "host": "macOS-26.2-arm64-arm-64bit-Mach-O",
+      "policy": "mapped",
+      "spill_cosets": false,
+      "test": "compact_generated_zkir3_hash_chain_context_only",
+      "exit_code": 0,
+      "wall_seconds": 18.185,
+      "sampled_peak_rss_kib_by_phase": {
+        "setup": 460480,
+        "prove": 653168,
+        "done": 0
+      },
+      "rss_samples_by_phase": {
+        "setup": 222,
+        "prove": 71,
+        "done": 1
+      },
+      "sampled_peak_spill_bytes_during_prove": 90177536,
+      "spill_samples_during_prove": 71,
+      "test_output": "\nrunning 1 test\nv3 context-only hash chain k=15 rows=32185 heap_key=false spill_cosets=false spill_floor_k=0 proof=9.599189291s bytes=4164\ntest compact_generated_zkir3_hash_chain_context_only ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 18.11s\n\n",
+      "rusage_children_peak_rss_bytes": 668844032,
+      "vmmap_enabled": false
+    },
+    "heap_spill": {
+      "host": "macOS-26.2-arm64-arm-64bit-Mach-O",
+      "policy": "heap",
+      "spill_cosets": true,
+      "test": "compact_generated_zkir3_hash_chain_context_only",
+      "exit_code": 0,
+      "wall_seconds": 25.46,
+      "sampled_peak_rss_kib_by_phase": {
+        "setup": 474752,
+        "prove": 847312,
+        "done": 0
+      },
+      "rss_samples_by_phase": {
+        "setup": 252,
+        "prove": 107,
+        "done": 1
+      },
+      "sampled_peak_spill_bytes_during_prove": 289406976,
+      "spill_samples_during_prove": 107,
+      "test_output": "\nrunning 1 test\nv3 context-only hash chain k=15 rows=32185 heap_key=true spill_cosets=true spill_floor_k=0 proof=15.588610042s bytes=4164\ntest compact_generated_zkir3_hash_chain_context_only ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 25.37s\n\n",
+      "rusage_children_peak_rss_bytes": 867647488,
+      "vmmap_enabled": false
+    },
+    "mapped": {
+      "host": "macOS-26.2-arm64-arm-64bit-Mach-O",
+      "policy": "mapped",
+      "spill_cosets": true,
+      "test": "compact_generated_zkir3_hash_chain_context_only",
+      "exit_code": 0,
+      "wall_seconds": 9.612,
+      "sampled_peak_rss_kib_by_phase": {
+        "setup": 468112,
+        "prove": 882128
+      },
+      "rss_samples_by_phase": {
+        "setup": 129,
+        "prove": 64
+      },
+      "sampled_peak_spill_bytes_during_prove": 375390208,
+      "spill_samples_during_prove": 48,
+      "test_output": "\nrunning 1 test\nv3 context-only hash chain k=15 rows=32185 heap_key=false spill_cosets=true spill_floor_k=0 proof=5.613445875s bytes=4164\ntest compact_generated_zkir3_hash_chain_context_only ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 9.56s\n\n",
+      "rusage_children_peak_rss_bytes": 903299072,
+      "vmmap_enabled": false
+    },
+    "heap_vmmap": {
+      "host": "macOS-26.2-arm64-arm-64bit-Mach-O",
+      "policy": "heap",
+      "spill_cosets": false,
+      "test": "compact_generated_zkir3_hash_chain_context_only",
+      "exit_code": 0,
+      "wall_seconds": 11.373,
+      "sampled_peak_rss_kib_by_phase": {
+        "setup": 472768,
+        "prove": 618416
+      },
+      "rss_samples_by_phase": {
+        "setup": 126,
+        "prove": 43
+      },
+      "sampled_peak_spill_bytes_during_prove": 0,
+      "spill_samples_during_prove": 37,
+      "vmmap_footprint_samples_bytes": [
+        [
+          434634752,
+          449314816
+        ],
+        [
+          456235417,
+          456235417
+        ],
+        [
+          475634073,
+          475634073
+        ],
+        [
+          549978112,
+          549978112
+        ]
+      ],
+      "test_output": "\nrunning 1 test\nv3 context-only hash chain k=15 rows=32185 heap_key=true spill_cosets=false spill_floor_k=0 proof=7.296918s bytes=4164\ntest compact_generated_zkir3_hash_chain_context_only ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 11.30s\n\n",
+      "rusage_children_peak_rss_bytes": 633257984,
+      "vmmap_enabled": true
+    },
+    "mapped_no_spill_vmmap": {
+      "host": "macOS-26.2-arm64-arm-64bit-Mach-O",
+      "policy": "mapped",
+      "spill_cosets": false,
+      "test": "compact_generated_zkir3_hash_chain_context_only",
+      "exit_code": 0,
+      "wall_seconds": 25.321,
+      "sampled_peak_rss_kib_by_phase": {
+        "setup": 488208,
+        "prove": 675872
+      },
+      "rss_samples_by_phase": {
+        "setup": 238,
+        "prove": 62
+      },
+      "sampled_peak_spill_bytes_during_prove": 90177536,
+      "spill_samples_during_prove": 60,
+      "vmmap_footprint_samples_bytes": [
+        [
+          446588518,
+          463051161
+        ],
+        [
+          456025702,
+          463051161
+        ],
+        [
+          465567744,
+          465567744
+        ],
+        [
+          475529216,
+          475529216
+        ],
+        [
+          487482982,
+          487482982
+        ],
+        [
+          412404940,
+          489475276
+        ],
+        [
+          490523852,
+          490523852
+        ]
+      ],
+      "test_output": "\nrunning 1 test\nv3 context-only hash chain k=15 rows=32185 heap_key=false spill_cosets=false spill_floor_k=0 proof=16.537475875s bytes=4164\ntest compact_generated_zkir3_hash_chain_context_only ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 25.26s\n\n",
+      "rusage_children_peak_rss_bytes": 692092928,
+      "vmmap_enabled": true
+    },
+    "heap_spill_vmmap": {
+      "host": "macOS-26.2-arm64-arm-64bit-Mach-O",
+      "policy": "heap",
+      "spill_cosets": true,
+      "test": "compact_generated_zkir3_hash_chain_context_only",
+      "exit_code": 0,
+      "wall_seconds": 19.377,
+      "sampled_peak_rss_kib_by_phase": {
+        "setup": 468928,
+        "prove": 852960
+      },
+      "rss_samples_by_phase": {
+        "setup": 125,
+        "prove": 52
+      },
+      "sampled_peak_spill_bytes_during_prove": 289406976,
+      "spill_samples_during_prove": 51,
+      "vmmap_footprint_samples_bytes": [
+        [
+          438933913,
+          450782822
+        ],
+        [
+          456340275,
+          456340275
+        ],
+        [
+          468084326,
+          468084326
+        ],
+        [
+          479513804,
+          479513804
+        ],
+        [
+          547146956,
+          547146956
+        ],
+        [
+          547251814,
+          547251814
+        ],
+        [
+          554801561,
+          554801561
+        ]
+      ],
+      "test_output": "\nrunning 1 test\nv3 context-only hash chain k=15 rows=32185 heap_key=true spill_cosets=true spill_floor_k=0 proof=15.343295875s bytes=4164\ntest compact_generated_zkir3_hash_chain_context_only ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 19.30s\n\n",
+      "rusage_children_peak_rss_bytes": 877756416,
+      "vmmap_enabled": true
+    },
+    "mapped_vmmap": {
+      "host": "macOS-26.2-arm64-arm-64bit-Mach-O",
+      "policy": "mapped",
+      "spill_cosets": true,
+      "test": "compact_generated_zkir3_hash_chain_context_only",
+      "exit_code": 0,
+      "wall_seconds": 17.185,
+      "sampled_peak_rss_kib_by_phase": {
+        "setup": 468960,
+        "prove": 882048
+      },
+      "rss_samples_by_phase": {
+        "setup": 172,
+        "prove": 54
+      },
+      "sampled_peak_spill_bytes_during_prove": 379584512,
+      "spill_samples_during_prove": 47,
+      "vmmap_footprint_samples_bytes": [
+        [
+          434215321,
+          448790528
+        ],
+        [
+          445959372,
+          448790528
+        ],
+        [
+          467245465,
+          467245465
+        ],
+        [
+          475529216,
+          475529216
+        ],
+        [
+          484127539,
+          484127539
+        ]
+      ],
+      "test_output": "\nrunning 1 test\nv3 context-only hash chain k=15 rows=32185 heap_key=false spill_cosets=true spill_floor_k=0 proof=10.093575708s bytes=4164\ntest compact_generated_zkir3_hash_chain_context_only ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 17.12s\n\n",
+      "rusage_children_peak_rss_bytes": 903217152,
+      "vmmap_enabled": true
+    }
+  }
+}

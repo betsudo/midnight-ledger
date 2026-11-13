@@ -1,0 +1,28 @@
+{
+  "host": "macOS-26.2-arm64-arm-64bit-Mach-O",
+  "policy": "mapped",
+  "keygen_mapped": true,
+  "spill_cosets": true,
+  "test": "compact_generated_zkir3_hash_chain_k18_context_only",
+  "exit_code": 0,
+  "wall_seconds": 90.037,
+  "rusage_children_peak_rss_bytes": 4810047488,
+  "sampled_peak_rss_kib_by_phase": {
+    "setup": 3336576,
+    "keygen": 2934336,
+    "prove": 4697312,
+    "done": 0
+  },
+  "rss_samples_by_phase": {
+    "setup": 691,
+    "keygen": 193,
+    "prove": 452,
+    "done": 1
+  },
+  "sampled_peak_spill_bytes_during_prove": 3036676096,
+  "spill_samples_during_prove": 360,
+  "sampled_peak_spill_bytes_during_keygen": 721420288,
+  "spill_samples_during_keygen": 188,
+  "vmmap_footprint_samples_bytes": [],
+  "test_output": "\nrunning 1 test\ntest compact_generated_zkir3_hash_chain_k18_context_only has been running for over 60 seconds\nv3 context-only hash chain k=18 rows=147048 keygen_mapped=true keygen=23.164449458s heap_key=false spill_cosets=true spill_floor_k=0 proof=41.445373s bytes=4164\ntest compact_generated_zkir3_hash_chain_k18_context_only ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 89.94s\n\n"
+}
