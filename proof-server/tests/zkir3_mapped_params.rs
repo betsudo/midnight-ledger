@@ -230,6 +230,19 @@ async fn explicit_key_cache_reuses_only_the_same_policy() {
         .init_with_policy(&mapped)
         .expect("different directory key");
     assert!(!Arc::ptr_eq(&different, &other_dir_key));
+
+    let unavailable = ProverConfig {
+        spill_dir: Some("/nonexistent-midnight-key-load-dir/for-this-test".into()),
+        ..mapped.clone()
+    };
+    assert!(
+        deserialize().init_with_policy(&unavailable).is_err(),
+        "an unavailable mapped-key directory must not fall back to heap"
+    );
+    let valid_after_failure = deserialize()
+        .init_with_policy(&mapped)
+        .expect("valid mapped key after failed load");
+    assert!(Arc::ptr_eq(&other_dir_key, &valid_after_failure));
 }
 
 #[actix_web::test]

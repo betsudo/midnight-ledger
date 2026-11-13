@@ -254,6 +254,12 @@ bytes, and keygen took 14.03 versus 23.16 seconds. Raw samples and caveats
 are in `proof-server/tests/compact-v3-hash-chain-k18/README.md`. This is a
 local source and synthetic-SRS result, not a published-package or CI gate.
 
+A follow-up negative v3 cache test selected a nonexistent directory for an
+explicit mapped-key load. The load returned an error instead of falling back
+to a heap key; a subsequent request with the prior valid mapped policy reused
+its original cached key. The focused `explicit_key_cache_reuses_only_the_same_policy`
+test passed on the same local 0.8.3 source graph.
+
 The same heads also passed a focused external ZKIR/Wasm browser-target compile:
 `CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang cargo check
 --offline --locked --target wasm32-unknown-unknown -p midnight-zkir-wasm`,
