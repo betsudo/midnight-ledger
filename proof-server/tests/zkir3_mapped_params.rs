@@ -335,6 +335,70 @@ async fn compact_generated_zkir3_counter_uses_the_same_prover_paths() {
     .await;
 }
 
+#[actix_web::test]
+#[cfg(feature = "zkir3-context")]
+async fn rejects_release_082_compact_v3_keys_and_proof() {
+    // These bytes were generated and verified on the locked, release-compatible
+    // proofs 0.8.2 / ZKIR 3.2.1 Ledger9 graph from this same Compact IR.
+    let ir = IrSource::load(include_str!("compact-v3-counter/increment.zkir").as_bytes())
+        .expect("load Compact-generated v3 IR");
+    let params = ParamsProver(Arc::new(ParamsKZG::<Bls12>::unsafe_setup(
+        ir.k() as u32,
+        ChaCha20Rng::from_seed([7; 32]),
+    )));
+    let mut params_bytes = Vec::new();
+    params
+        .0
+        .write_custom(&mut params_bytes, SerdeFormat::RawBytesUnchecked)
+        .expect("serialize params");
+    let verifier_params = ParamsVerifier::read(&params_bytes[..]).expect("verifier params");
+    let provider = HeapParams(params);
+    let old_key: ProverKey<IrSource> = tagged_deserialize(io::Cursor::new(include_bytes!(
+        "fixtures/v3_082/prover-key-082.bin"
+    )))
+    .expect("outer prover-key tag is compatible");
+    let key_error = old_key
+        .init_with_policy(&ProverConfig::heap())
+        .expect_err("0.8.2 inner prover key must not load on 0.8.3");
+    assert!(
+        key_error
+            .to_string()
+            .contains("key declares PCS id 6, expected 0"),
+        "unexpected key error: {key_error:#}"
+    );
+    let old_vk = tagged_deserialize::<VerifierKey>(io::Cursor::new(include_bytes!(
+        "fixtures/v3_082/verifier-key-082.bin"
+    )))
+    .expect("released verifier key loads on candidate");
+
+    let old_proof: transient_crypto::proofs::Proof = tagged_deserialize(io::Cursor::new(
+        include_bytes!("fixtures/v3_082/proof-082.bin"),
+    ))
+    .expect("proof wrapper format is compatible");
+    let (_, new_vk) = ir.keygen(&provider).await.expect("candidate v3 keygen");
+    let opening: Fr = 7.into();
+    let commitment = transient_commit(&[] as &[Fr], opening);
+    let transcript_inputs = [0x70, 0x01, 0x01, 0x00, 0x0e, 0x01, 0xa1]
+        .into_iter()
+        .map(Fr::from);
+    let public_inputs = [42.into(), commitment].into_iter().chain(transcript_inputs);
+    let old_verification = old_vk
+        .verify(&verifier_params, &old_proof, public_inputs.clone())
+        .expect_err("released verifier key cannot read on candidate");
+    assert!(
+        old_verification
+            .to_string()
+            .contains("problem reading the verifier key"),
+        "unexpected verifier-key error: {old_verification:#}"
+    );
+    assert!(
+        new_vk
+            .verify(&verifier_params, &old_proof, public_inputs)
+            .is_err(),
+        "a released 0.8.2 proof must not verify under the candidate 0.8.3 key"
+    );
+}
+
 #[test]
 fn compact_generated_zkir3_hash_chain_cost_model() {
     // Compact 0.36.1 (7fa3a117c), using --skip-zk. This larger circuit

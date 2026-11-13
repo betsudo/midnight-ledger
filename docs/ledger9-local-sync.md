@@ -335,3 +335,24 @@ This run used temporary local patches for curves, circuits, proofs, stdlib,
 and ZKIR, plus a Git-source patch for `sha3-circuit`'s proofs dependency.
 The committed Ledger manifest and lockfile still select the release graph;
 this local qualification does not establish published-package or CI status.
+
+## Compact ZKIR v3 release-artifact compatibility gate
+
+A separate Ledger9 release-compatible line (`sync/ledger9-current` at
+`3fd8a891`) generated a key pair and proof from the same Compact 0.36.1
+ZKIR v3 counter IR used by the candidate suite. It used its locked proofs
+0.8.2 / stdlib 2.4.0 / ZKIR 3.2.1 graph, a deterministic synthetic SRS,
+and verified the proof before export. The three tagged artifacts and their
+hashes are recorded in `proof-server/tests/fixtures/v3_082/README.md`.
+
+The local proofs 0.8.3 candidate at `de847239`, external ZKIR v3 adapter at
+`725f5a5`, and this Ledger consumer reject those release artifacts in the
+focused `rejects_release_082_compact_v3_keys_and_proof` test. The old prover
+key's outer tag reads, but inner initialization reports PCS id 6 where 0 is
+expected. The old verifier key's outer tag reads, but verification fails on
+its inner key read. The old proof wrapper reads, but verification under a
+new 0.8.3 key fails. This is a concrete Ledger ZKIR v3 incompatibility:
+0.8.3 rollout needs either an explicit versioned conversion or regeneration
+of stored keys, with a defined policy for existing proofs. The test used
+temporary local source patches for the unreleased package graph. It does
+not establish released-package compatibility or current-head CI.
