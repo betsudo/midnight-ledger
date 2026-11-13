@@ -187,19 +187,35 @@ async fn explicit_key_cache_reuses_only_the_same_policy() {
     tagged_serialize(&generated, &mut bytes).expect("serialize key");
     generated.warm_pk_cache().expect("warm legacy cache");
     let legacy_key = generated.init().expect("initialized generated key");
+    let process_mapped = ProverConfig::process().map_prover_key;
 
     let deserialize = || -> ProverKey<IrSource> {
         tagged_deserialize(io::Cursor::new(&bytes)).expect("deserialize lazy key")
     };
     let legacy_reloaded = deserialize().init().expect("legacy cache hit");
-    assert!(Arc::ptr_eq(&legacy_key, &legacy_reloaded));
+    assert_eq!(Arc::ptr_eq(&legacy_key, &legacy_reloaded), !process_mapped);
     let heap = ProverConfig::heap();
-    let first = deserialize().init_with_policy(&heap).expect("heap key");
-    assert!(!Arc::ptr_eq(&first, &legacy_key));
+    let mut first = deserialize().init_with_policy(&heap).expect("heap key");
+    assert_eq!(Arc::ptr_eq(&first, &legacy_key), !process_mapped);
+    if process_mapped {
+        let mapped_process = deserialize().init().expect("process-mapped key");
+        assert!(!Arc::ptr_eq(&first, &mapped_process));
+        // Reinsert the heap entry for the remaining explicit-policy checks.
+        first = deserialize()
+            .init_with_policy(&heap)
+            .expect("heap key reload");
+    }
     let same = deserialize()
         .init_with_policy(&heap)
         .expect("cached heap key");
     assert!(Arc::ptr_eq(&first, &same));
+    let mut heap_with_spill = heap.clone();
+    heap_with_spill.spill_cosets = true;
+    heap_with_spill.coset_spill_floor_k = 0;
+    let same_with_spill = deserialize()
+        .init_with_policy(&heap_with_spill)
+        .expect("proof-time spill setting reuses heap key");
+    assert!(Arc::ptr_eq(&first, &same_with_spill));
 
     // A second circuit key must not evict a heap key just because the
     // explicit-policy path has a stricter retention limit for mapped files.
@@ -230,6 +246,12 @@ async fn explicit_key_cache_reuses_only_the_same_policy() {
         .init_with_policy(&mapped)
         .expect("cached mapped key");
     assert!(Arc::ptr_eq(&different, &same_mapped));
+    mapped.spill_cosets = true;
+    mapped.coset_spill_floor_k = 0;
+    let same_mapped_with_spill = deserialize()
+        .init_with_policy(&mapped)
+        .expect("proof-time spill setting reuses mapped key");
+    assert!(Arc::ptr_eq(&different, &same_mapped_with_spill));
 
     let other_dir = tempfile::tempdir().expect("second mapped-key directory");
     mapped.spill_dir = Some(other_dir.path().to_path_buf());
