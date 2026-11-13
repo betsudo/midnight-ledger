@@ -374,3 +374,23 @@ new 0.8.3 key fails. This is a concrete Ledger ZKIR v3 incompatibility:
 of stored keys, with a defined policy for existing proofs. The test used
 temporary local source patches for the unreleased package graph. It does
 not establish released-package compatibility or current-head CI.
+
+## Zero-fill reservation fix on the Ledger9 candidate graph
+
+The local candidate `sync/ledger9-083-spill-sync-integration` uses proofs
+`46d8cd28` (the zero-fill reservation sync fix), external ZKIR v3
+`725f5a5`, and this Ledger branch based on `73bbcc1d`. With temporary
+local source patches for curves, circuits, proofs, stdlib, and ZKIR, the
+Compact v3 `/prove` test passed using the tracked ceremony SRS at its full
+k=14, a mapped companion, and forced coset spill. The SRS SHA-256 was
+`fc253016885ec830e97808c9ec920bb5cab5c21af590380a6cb5eb0538e2b244`.
+The complete non-ignored `zkir3_mapped_params` target passed (8 tests,
+4 measurement arms ignored), including the 0.8.2 artifact rejection gate.
+Cargo resolved one local proofs 0.8.3 for the current v2/v3 graph and the
+intentional registry proofs 0.7.3 for legacy V0/V1; stdlib 2.5.0,
+transient-crypto 3.2.0, and external ZKIR 3.3.0 came from the local source
+stack. The low-level zero-fill fallback test and eight spill module tests
+passed on the ZK head. The Ledger HTTP run used the normal reservation
+path, so it establishes integration after the fix, not a full-filesystem
+fallback or delayed-ENOSPC simulation. The candidate still depends on
+unpublished local package sources and has no current-head CI.
