@@ -185,6 +185,94 @@ async fn explicit_key_cache_reuses_only_the_same_policy() {
 }
 
 #[actix_web::test]
+async fn unavailable_v3_key_storage_rejects_and_coset_spill_falls_back() {
+    let ir = IrSource::load(
+        &br#"{
+            "version": { "major": 3, "minor": 0 },
+            "inputs": [{ "name": "%v_0", "type": "Scalar<BLS12-381>" }],
+            "outputs": [],
+            "do_communications_commitment": false,
+            "instructions": [{ "op": "assert", "cond": "%v_0" }]
+        }"#[..],
+    )
+    .expect("load v3 IR");
+    let params = ParamsProver(Arc::new(ParamsKZG::<Bls12>::unsafe_setup(
+        ir.k() as u32,
+        ChaCha20Rng::from_seed([19; 32]),
+    )));
+    let mut params_bytes = Vec::new();
+    params
+        .0
+        .write_custom(&mut params_bytes, SerdeFormat::RawBytesUnchecked)
+        .expect("serialize parameters");
+    let verifier_params = ParamsVerifier::read(&params_bytes[..]).expect("verifier parameters");
+    let heap_params = HeapParams(params);
+    let (generated, vk) = ir.keygen(&heap_params).await.expect("v3 keygen");
+    let mut serialized = Vec::new();
+    tagged_serialize(&generated, &mut serialized).expect("serialize generated key");
+    let lazy: ProverKey<IrSource> =
+        tagged_deserialize(&mut &serialized[..]).expect("deserialize lazy key");
+    let private = tempfile::tempdir().expect("private parent directory");
+    let unavailable = private.path().join("missing-spill-directory");
+    assert!(!unavailable.exists());
+
+    let mut mapped_key = ProverConfig::mapped_key();
+    mapped_key.spill_dir = Some(unavailable.clone());
+    let key_error = lazy
+        .init_with_context(&ProverContext::new(mapped_key))
+        .expect_err("unavailable mapped-key storage must fail explicitly");
+    assert!(
+        key_error.chain().any(|cause| cause
+            .downcast_ref::<io::Error>()
+            .is_some_and(|e| e.kind() == io::ErrorKind::NotFound)),
+        "mapped-key failure must retain its missing-directory cause: {key_error:#}"
+    );
+
+    let preimage = ProofPreimage {
+        binding_input: 42.into(),
+        communications_commitment: None,
+        inputs: vec![1.into()],
+        private_transcript: vec![],
+        public_transcript_inputs: vec![],
+        public_transcript_outputs: vec![],
+        key_location: KeyLocation(Cow::Borrowed("unavailable-spill")),
+    };
+    let resolver = KeyResolver { pk: lazy, vk, ir };
+    let mut coset_spill = ProverConfig::heap();
+    coset_spill.spill_cosets = true;
+    coset_spill.coset_spill_floor_k = 0;
+    coset_spill.spill_dir = Some(unavailable);
+    assert!(coset_spill.spills_cosets_at(resolver.ir.k() as u32));
+    let (fallback_proof, _) = preimage
+        .prove_with_context::<IrSource>(
+            ChaCha20Rng::from_seed([42; 32]),
+            &heap_params,
+            &resolver,
+            &ProverContext::new(coset_spill),
+        )
+        .await
+        .expect("unavailable coset spill must fall back to heap");
+    resolver
+        .vk
+        .verify(&verifier_params, &fallback_proof, [42.into()].into_iter())
+        .expect("fallback proof verifies");
+
+    let (proof, _) = preimage
+        .prove_with_context::<IrSource>(
+            ChaCha20Rng::from_seed([42; 32]),
+            &heap_params,
+            &resolver,
+            &ProverContext::new(ProverConfig::heap()),
+        )
+        .await
+        .expect("failed storage policy must not poison heap retry");
+    resolver
+        .vk
+        .verify(&verifier_params, &proof, [42.into()].into_iter())
+        .expect("heap retry verifies");
+}
+
+#[actix_web::test]
 async fn zkir3_heap_and_mapped_params_produce_the_same_valid_proof() {
     let ir = IrSource::load(
         &br#"{
