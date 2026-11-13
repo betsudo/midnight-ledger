@@ -60,19 +60,24 @@ lto = true
 codegen-units = 1
 panic = "abort"
 
-# Because we pull in older, crates.io versions of `transient-crypto`, we need
-# to force these to resolve locally for a local build. These patches not being
-# present in consumer builds is fine, as they don't/shouldn't *want* the local
-# packages.
+# Keep local Ledger packages unified while selecting unpublished Ledger9 proof
+# and ZKIR v3 candidates from immutable betsudo commits.
 [patch.crates-io]
-# The optimized 0.8.4 candidate is local-only. Supply its ZK source through
-# explicit Cargo path patches during qualification; a release must replace
-# those with an immutable betsudo commit once the source is published.
 midnight-base-crypto = { path = "base-crypto" }
 midnight-serialize = { path = "serialize" }
 # midnight-zkir v3 asks crates.io for transient-crypto ^3.0.0; resolve it to
 # the in-tree copy so both share one set of types.
 midnight-transient-crypto = { path = "transient-crypto" }
+midnight-curves = { git = "https://github.com/betsudo/midnight-zk.git", rev = "032da948f08efbb9dd27489ae8cfdc0c2268b2ac" }
+midnight-circuits = { git = "https://github.com/betsudo/midnight-zk.git", rev = "032da948f08efbb9dd27489ae8cfdc0c2268b2ac" }
+midnight-proofs = { git = "https://github.com/betsudo/midnight-zk.git", rev = "032da948f08efbb9dd27489ae8cfdc0c2268b2ac" }
+midnight-zk-stdlib = { git = "https://github.com/betsudo/midnight-zk.git", rev = "032da948f08efbb9dd27489ae8cfdc0c2268b2ac" }
+midnight-zkir = { git = "https://github.com/betsudo/midnight-zkir.git", rev = "2c2732ffd6649f93e3a4e5a65b1a4d7769338db1" }
+
+# sha3-circuit names upstream ZK as a Git source. Bind it to the same proof
+# commit so the graph cannot silently mix proof implementations.
+[patch."https://github.com/midnightntwrk/midnight-zk"]
+midnight-proofs = { git = "https://github.com/betsudo/midnight-zk.git", rev = "032da948f08efbb9dd27489ae8cfdc0c2268b2ac" }
 
 [workspace.metadata.spellcheck]
 config = ".spellcheck/cargo-spellcheck.toml"
