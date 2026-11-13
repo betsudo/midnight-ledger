@@ -879,8 +879,8 @@ pub(crate) enum InnerProverKey<T: Zkir> {
     Invalid(Arc<Vec<u8>>),
     Initialized(Arc<T::ProverKey>, Option<bool>),
     /// A freshly generated key whose process policy is known. Keep this
-    /// distinct from a legacy-initialized key whose storage provenance is
-    /// unknown to an explicit request.
+    /// distinct from a legacy-initialized key that may lack known storage
+    /// provenance for an explicit request.
     GeneratedUnderProcessPolicy(Arc<T::ProverKey>, ProverConfig),
 }
 
@@ -898,12 +898,6 @@ const PK_CACHE_SIZE: usize = 5;
 // process-policy lookup could otherwise reuse a different mapped layout.
 const PK_POLICY_MAPPED_CACHE_SIZE: usize = 1;
 
-struct LegacyKeyCacheEntry {
-    key: Arc<dyn Any + Send + Sync>,
-    // None covers keys supplied by from_raw, whose storage layout is unknown.
-    mapped_layout: Option<bool>,
-}
-
 struct PolicyKeyCacheEntry {
     hash: HashOutput,
     type_id: TypeId,
@@ -913,7 +907,9 @@ struct PolicyKeyCacheEntry {
 
 lazy_static! {
     // forall<T> Arc<MidnightPK<T>>
-    static ref PK_CACHE: Mutex<LruCache<HashOutput, LegacyKeyCacheEntry>> =
+    // The second key component is the known mapped layout, or None for keys
+    // supplied by from_raw. Both layouts share the same five-entry limit.
+    static ref PK_CACHE: Mutex<LruCache<(HashOutput, Option<bool>), Arc<dyn Any + Send + Sync>>> =
         Mutex::new(LruCache::new(NonZeroUsize::new(PK_CACHE_SIZE).unwrap()));
     static ref PK_POLICY_CACHE: Mutex<VecDeque<PolicyKeyCacheEntry>> =
         Mutex::new(VecDeque::with_capacity(PK_POLICY_MAPPED_CACHE_SIZE));
@@ -951,10 +947,7 @@ fn cached_explicit_key<T: Zkir>(
         PK_CACHE
             .lock()
             .ok()
-            .and_then(|mut cache| {
-                let entry = cache.get(hash)?;
-                (entry.mapped_layout == Some(false)).then(|| entry.key.clone())
-            })
+            .and_then(|mut cache| cache.get(&(*hash, Some(false))).cloned())
             .and_then(|key| key.downcast::<T::ProverKey>().ok())
     }
 }
@@ -1064,24 +1057,19 @@ impl<T: Zkir> InnerProverKey<T> {
             InnerProverKey::Uninitialized(data) => persistent_hash(&data[..]),
             _ => return,
         };
-        if let Some(pk) = PK_CACHE
+        if let Some((pk, layout)) = PK_CACHE
             .lock()
             .ok()
             .and_then(|mut c| {
-                c.get(&hash)
-                    .filter(|entry| {
-                        // An explicit heap request may have replaced a
-                        // process-mapped cache entry (or vice versa). Legacy
-                        // callers must still load under the process layout.
-                        entry
-                            .mapped_layout
-                            .is_none_or(|mapped| mapped == ProverConfig::process().map_prover_key)
-                    })
-                    .map(|entry| (entry.key.clone(), entry.mapped_layout))
+                let process_layout = Some(ProverConfig::process().map_prover_key);
+                c.get(&(hash, process_layout))
+                    .cloned()
+                    .map(|key| (key, process_layout))
+                    .or_else(|| c.get(&(hash, None)).cloned().map(|key| (key, None)))
             })
             .and_then(|(ptr, layout)| ptr.downcast().ok().map(|key| (key, layout)))
         {
-            *self = InnerProverKey::Initialized(pk.0, pk.1);
+            *self = InnerProverKey::Initialized(pk, layout);
         }
     }
 }
@@ -1134,13 +1122,7 @@ impl<T: Zkir> ProverKey<T> {
                 let key = Arc::new(pk);
                 let mapped_layout = Some(ProverConfig::process().map_prover_key);
                 if let Ok(mut cache) = PK_CACHE.lock() {
-                    cache.put(
-                        persistent_hash(&data),
-                        LegacyKeyCacheEntry {
-                            key: key.clone(),
-                            mapped_layout,
-                        },
-                    );
+                    cache.put((persistent_hash(&data), mapped_layout), key.clone());
                 }
                 *mutex = InnerProverKey::Initialized(key.clone(), mapped_layout);
                 Ok(key)
@@ -1207,6 +1189,10 @@ impl<T: Zkir> ProverKey<T> {
                         "generated prover key cannot honor this request's memory policy; serialize and reload it under the requested policy"
                     ));
                 }
+                InnerProverKey::Initialized(key, Some(false)) if !policy.map_prover_key => {
+                    check_key_cancelled(context, "prover_key.initialized")?;
+                    return Ok(key.clone());
+                }
                 InnerProverKey::Initialized(_, _) => {
                     return Err(anyhow::anyhow!(
                         "explicit memory policy requires a serialized prover key"
@@ -1238,6 +1224,10 @@ impl<T: Zkir> ProverKey<T> {
             InnerProverKey::Invalid(_) => {
                 return Err(anyhow::anyhow!("known invalid prover key"));
             }
+            InnerProverKey::Initialized(key, Some(false)) if !policy.map_prover_key => {
+                check_key_cancelled(context, "prover_key.initialized")?;
+                return Ok(key.clone());
+            }
             InnerProverKey::Initialized(_, _)
             | InnerProverKey::GeneratedUnderProcessPolicy(_, _) => {
                 return Err(anyhow::anyhow!(
@@ -1264,13 +1254,7 @@ impl<T: Zkir> ProverKey<T> {
                 cache.truncate(PK_POLICY_MAPPED_CACHE_SIZE);
             }
         } else if let Ok(mut cache) = PK_CACHE.lock() {
-            cache.put(
-                hash,
-                LegacyKeyCacheEntry {
-                    key: key.clone(),
-                    mapped_layout: Some(false),
-                },
-            );
+            cache.put((hash, Some(false)), key.clone());
         }
         Ok(key)
     }
@@ -1309,15 +1293,21 @@ impl<T: Zkir> ProverKey<T> {
     /// separately; until then, treat the figure above as an
     /// unreproduced observation rather than a benchmark.
     ///
-    /// Returns `Ok(true)` if the key was `Initialized` and the
-    /// cache was warmed; `Ok(false)` if the key was
-    /// `Uninitialized`/`Invalid` (nothing to share).
+    /// Returns `Ok(true)` when an initialized key was cached. A key generated
+    /// under a mapped process policy is left for a serialized reload, since
+    /// keygen's deferred layout does not yet own mapped files. Uninitialized
+    /// and invalid keys also return `Ok(false)`.
     pub fn warm_pk_cache(&self) -> std::io::Result<bool> {
         let (arc_pk, mapped_layout) = {
             let mutex = self.0.lock().expect("mutex not poisoned");
             match &*mutex {
                 InnerProverKey::Initialized(key, mapped_layout) => (key.clone(), *mapped_layout),
-                InnerProverKey::GeneratedUnderProcessPolicy(key, _) => (key.clone(), Some(false)),
+                InnerProverKey::GeneratedUnderProcessPolicy(key, keygen_policy)
+                    if !keygen_policy.map_prover_key =>
+                {
+                    (key.clone(), Some(false))
+                }
+                InnerProverKey::GeneratedUnderProcessPolicy(_, _) => return Ok(false),
                 _ => return Ok(false),
             }
         };
@@ -1336,13 +1326,7 @@ impl<T: Zkir> ProverKey<T> {
 
         let hash = persistent_hash(&inner_buf);
         if let Ok(mut c) = PK_CACHE.lock() {
-            c.put(
-                hash,
-                LegacyKeyCacheEntry {
-                    key: arc_pk as Arc<dyn Any + Send + Sync>,
-                    mapped_layout,
-                },
-            );
+            c.put((hash, mapped_layout), arc_pk as Arc<dyn Any + Send + Sync>);
         }
         Ok(true)
     }

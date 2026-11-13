@@ -185,9 +185,12 @@ async fn explicit_key_cache_reuses_only_the_same_policy() {
     let (generated, _) = ir.keygen(&HeapParams(params)).await.expect("keygen");
     let mut bytes = Vec::new();
     tagged_serialize(&generated, &mut bytes).expect("serialize key");
-    generated.warm_pk_cache().expect("warm legacy cache");
-    let legacy_key = generated.init().expect("initialized generated key");
     let process_mapped = ProverConfig::process().map_prover_key;
+    assert_eq!(
+        generated.warm_pk_cache().expect("warm legacy cache"),
+        !process_mapped
+    );
+    let legacy_key = generated.init().expect("initialized generated key");
 
     let deserialize = || -> ProverKey<IrSource> {
         tagged_deserialize(io::Cursor::new(&bytes)).expect("deserialize lazy key")
@@ -195,6 +198,16 @@ async fn explicit_key_cache_reuses_only_the_same_policy() {
     let legacy_reloaded = deserialize().init().expect("legacy cache hit");
     assert_eq!(Arc::ptr_eq(&legacy_key, &legacy_reloaded), !process_mapped);
     let heap = ProverConfig::heap();
+    let initialized = deserialize();
+    let initialized_key = initialized.init().expect("initialize shared key");
+    if process_mapped {
+        assert!(initialized.init_with_policy(&heap).is_err());
+    } else {
+        let explicit = initialized
+            .init_with_policy(&heap)
+            .expect("known heap key satisfies explicit heap request");
+        assert!(Arc::ptr_eq(&initialized_key, &explicit));
+    }
     let mut first = deserialize().init_with_policy(&heap).expect("heap key");
     assert_eq!(Arc::ptr_eq(&first, &legacy_key), !process_mapped);
     if process_mapped {
