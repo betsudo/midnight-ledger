@@ -20,7 +20,9 @@ use futures::future::join;
 use ledger::dust::DustResolver;
 use ledger::prove::Resolver;
 use midnight_proof_server::endpoints::PUBLIC_PARAMS;
-use midnight_proof_server::{IngressConfig, server_with_ingress_config, worker_pool::WorkerPool};
+use midnight_proof_server::{
+    IngressConfig, ServerConfig, server_with_config, worker_pool::WorkerPool,
+};
 use tracing::{Level, info};
 use tracing_subscriber::filter::Targets;
 use tracing_subscriber::layer::SubscriberExt;
@@ -65,6 +67,14 @@ struct Args {
         env = "MIDNIGHT_PROOF_SERVER_BODY_READ_TIMEOUT_SECS"
     )]
     body_read_timeout_secs: u64,
+    /// Abort HTTP/1 handlers on a client write-side close. Clients that
+    /// intentionally half-close after sending a request must leave this off.
+    #[arg(
+        long,
+        default_value_t = false,
+        env = "MIDNIGHT_PROOF_SERVER_ABORT_HALF_CLOSED_CLIENTS"
+    )]
+    abort_half_closed_clients: bool,
     #[arg(
         long,
         default_value_t = false,
@@ -149,9 +159,17 @@ async fn main() -> std::io::Result<()> {
         max_inflight: args.max_ingress,
         read_timeout: std::time::Duration::from_secs(args.body_read_timeout_secs),
     };
-    server_with_ingress_config(args.port, !args.no_fetch_params, pool, ingress)?
-        .0
-        .await
+    server_with_config(
+        args.port,
+        !args.no_fetch_params,
+        pool,
+        ServerConfig {
+            ingress,
+            allow_half_closed_clients: !args.abort_half_closed_clients,
+        },
+    )?
+    .0
+    .await
 }
 
 fn init_logging(verbose: bool) {
