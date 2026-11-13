@@ -61,3 +61,7 @@ low-level prover's documented warning-and-heap fallback; its proof still
 verifies, and a subsequent heap proof also succeeds. The benchmark-only
 `MIDNIGHT_BENCH_REQUIRE_SPILL=1` setting turns missing spill into a hard
 failure so a benchmark cannot report an unobserved spill arm as successful.
+The released V2 and V3 minimal fixtures have byte-identical verifier
+parameters, verifier keys, and raw proofs. A cross-pair raw proof assertion
+cannot test protocol version separation with those fixtures. Issue #30 retains
+the Ledger versioned-envelope negative and a distinct-circuit comparison.
