@@ -280,3 +280,21 @@ latency values, exact commands, and caveats are in
 `proof-server/tests/v2-v3-assert/README.md`. The SRS stays heap-backed in
 this comparison; the separate Compact v3 fixture exercises mapped SRS.
 This is a matched small circuit baseline, not a production or mobile claim.
+
+The next local candidate retains the explicit memory policy on an already
+generated ZKIR v3 key. A direct `prove_with_context` accepts that key only
+under the same `ProverConfig`; a different policy fails explicitly. The
+policy is process-local metadata and does not change serialized key bytes.
+Policy-tagged keys do not enter the legacy bytes-only cache. The focused
+`zkir3_mapped_params` suite passed (7 tests; 4 measurement arms ignored),
+including a verified proof directly from the mapped generated key. The
+external ZKIR adapter uses `ProverKey::from_raw_with_policy`; legacy
+`keygen` and `from_raw` keep their original paths.
+
+This test used temporary local patches for curves 0.3.1, circuits 7.3.0,
+proofs 0.8.3, stdlib 2.5.0, and ZKIR 3.3.0, plus a Git-source patch that
+deduplicated `sha3-circuit`'s proofs dependency. Without those patches,
+the candidate did not compile against the current registry curves/circuits:
+the proofs and circuits sources refer to APIs missing from their published
+same-version packages. The committed Ledger9 lockfile and release pin were
+restored; this is a local-source gate, not a released-package or CI gate.

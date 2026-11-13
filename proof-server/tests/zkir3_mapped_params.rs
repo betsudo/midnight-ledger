@@ -182,7 +182,7 @@ async fn explicit_key_cache_reuses_only_the_same_policy() {
     let keygen_dir = tempfile::tempdir().expect("mapped keygen directory");
     let mut keygen_policy = ProverConfig::mapped_key();
     keygen_policy.spill_dir = Some(keygen_dir.path().to_path_buf());
-    let (mapped_generated, _) = ir
+    let (mapped_generated, mapped_vk) = ir
         .keygen_with_policy(&HeapParams(params.clone()), &keygen_policy)
         .await
         .expect("mapped ZKIR v3 keygen");
@@ -190,6 +190,58 @@ async fn explicit_key_cache_reuses_only_the_same_policy() {
     tagged_serialize(&mapped_generated, &mut mapped_bytes).expect("serialize mapped key");
     assert_eq!(mapped_bytes, bytes, "keygen policy must preserve key bytes");
     assert_eq!(keygen_dir.path().read_dir().unwrap().count(), 0);
+    let context = ProverContext::new(keygen_policy.clone());
+    let generated_key = mapped_generated
+        .init_with_context(&context)
+        .expect("generated key retains its policy");
+    assert!(Arc::ptr_eq(
+        &generated_key,
+        &mapped_generated
+            .init_with_context(&context)
+            .expect("same policy")
+    ));
+    assert!(
+        !mapped_generated
+            .warm_pk_cache()
+            .expect("inspect legacy cache"),
+        "a policy-tagged key must not enter the bytes-only legacy cache"
+    );
+    let mismatch = mapped_generated
+        .init_with_policy(&ProverConfig::heap())
+        .expect_err("a generated mapped key must reject a different storage policy");
+    assert!(
+        mismatch
+            .to_string()
+            .contains("does not match requested policy")
+    );
+    let preimage = ProofPreimage {
+        binding_input: 42.into(),
+        communications_commitment: None,
+        inputs: vec![1.into()],
+        private_transcript: vec![],
+        public_transcript_inputs: vec![],
+        public_transcript_outputs: vec![],
+        key_location: KeyLocation(Cow::Borrowed("generated-key")),
+    };
+    let (proof, pis, _) = ir
+        .prove_with_context(
+            ChaCha20Rng::from_seed([42; 32]),
+            &HeapParams(params.clone()),
+            mapped_generated.clone(),
+            &preimage,
+            &context,
+        )
+        .await
+        .expect("prove directly from generated mapped key");
+    let mut params_bytes = Vec::new();
+    params
+        .0
+        .write_custom(&mut params_bytes, SerdeFormat::RawBytesUnchecked)
+        .expect("serialize verifier params");
+    let verifier_params = ParamsVerifier::read(&params_bytes[..]).expect("verifier params");
+    mapped_vk
+        .verify(&verifier_params, &proof, pis.into_iter())
+        .expect("verify generated-key proof");
     let mut unavailable = keygen_policy.clone();
     unavailable.spill_dir = Some("/nonexistent-midnight-keygen-dir/for-this-test".into());
     assert!(
