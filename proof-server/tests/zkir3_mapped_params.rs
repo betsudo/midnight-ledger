@@ -5,9 +5,11 @@
 //! the actual crate boundary without a large proof or external parameter file.
 
 use std::borrow::Cow;
+use std::fs;
 use std::io;
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use base_crypto::data_provider::MidnightDataProvider;
 use midnight_curves::Bls12;
@@ -250,6 +252,164 @@ async fn compact_generated_zkir3_hash_chain_proof_timing() {
         true,
     )
     .await;
+}
+
+#[actix_web::test]
+#[ignore = "separate-process high-k policy benchmark; use hash_chain_policy_smoke.py"]
+async fn compact_generated_zkir3_hash_chain_policy_benchmark() {
+    let ir = IrSource::load(include_str!("compact-v3-hash-chain/hashAndIncrement.zkir").as_bytes())
+        .expect("load Compact-generated v3 hash-chain IR");
+    let k = ir.k();
+    let rows = ir.model().rows();
+    assert_eq!((k, rows), (15, 32_185));
+    let artifact_dir = PathBuf::from(
+        std::env::var_os("MIDNIGHT_HASH_BENCH_ARTIFACT_DIR")
+            .expect("set MIDNIGHT_HASH_BENCH_ARTIFACT_DIR"),
+    );
+    if std::env::var("MIDNIGHT_HASH_BENCH_STAGE").as_deref() == Ok("export") {
+        // The script owns this private directory for the whole run. Publishing
+        // here completes before any measured process opens the companion.
+        let params = ParamsProver(Arc::new(ParamsKZG::<Bls12>::unsafe_setup(
+            k as u32,
+            ChaCha20Rng::from_seed([7; 32]),
+        )));
+        let (pk, vk) = ir
+            .keygen(&HeapParams(params.clone()))
+            .await
+            .expect("v3 keygen");
+        let mut raw_params = Vec::new();
+        params
+            .0
+            .write_custom(&mut raw_params, SerdeFormat::RawBytesUnchecked)
+            .expect("serialize parameters");
+        fs::write(artifact_dir.join("params.bin"), raw_params).expect("write parameters");
+        let mut pk_bytes = Vec::new();
+        tagged_serialize(&pk, &mut pk_bytes).expect("serialize prover key");
+        fs::write(artifact_dir.join("prover-key.bin"), pk_bytes).expect("write prover key");
+        let mut vk_bytes = Vec::new();
+        tagged_serialize(&vk, &mut vk_bytes).expect("serialize verifier key");
+        fs::write(artifact_dir.join("verifier-key.bin"), vk_bytes).expect("write verifier key");
+        let trusted = unsafe { TrustedParamsDir::new(&artifact_dir) };
+        let cache = CompanionCache::from_trusted_dir(trusted);
+        cache
+            .open_or_build(&MidnightDataProvider::name_k(k), || Ok(params))
+            .expect("publish immutable mapped companion");
+        eprintln!("hash-chain-bench stage=export k={k} rows={rows}");
+        return;
+    }
+
+    let arm = std::env::var("MIDNIGHT_HASH_BENCH_ARM").expect("set benchmark arm");
+    assert!(arm == "heap" || arm == "mapped");
+    assert_eq!(
+        std::env::var("MIDNIGHT_HASH_BENCH_STAGE").as_deref(),
+        Ok("prove")
+    );
+    let spill_dir = PathBuf::from(
+        std::env::var_os("MIDNIGHT_HASH_BENCH_SPILL_DIR").expect("set private spill directory"),
+    );
+    let mut policy = if arm == "mapped" {
+        ProverConfig::mapped_key_and_cosets()
+    } else {
+        ProverConfig::heap()
+    };
+    if arm == "mapped" {
+        policy.coset_spill_floor_k = 0;
+        policy.spill_dir = Some(spill_dir);
+        assert!(policy.map_prover_key && policy.spills_cosets_at(k as u32));
+    }
+    let context = ProverContext::new(policy);
+    let params_bytes = fs::read(artifact_dir.join("params.bin")).expect("read parameters");
+    let verifier_params = ParamsVerifier::read(&params_bytes[..]).expect("verifier parameters");
+    let pk_bytes = fs::read(artifact_dir.join("prover-key.bin")).expect("read prover key");
+    let pk: ProverKey<IrSource> =
+        tagged_deserialize(&mut &pk_bytes[..]).expect("deserialize lazy prover key");
+    let vk_bytes = fs::read(artifact_dir.join("verifier-key.bin")).expect("read verifier key");
+    let vk: VerifierKey = tagged_deserialize(&mut &vk_bytes[..]).expect("deserialize verifier key");
+    let key_start = Instant::now();
+    let _loaded = pk
+        .init_with_context(&context)
+        .expect("load key under request policy");
+    let key_ms = key_start.elapsed().as_secs_f64() * 1_000.0;
+    fs::write(
+        PathBuf::from(
+            std::env::var_os("MIDNIGHT_HASH_BENCH_KEY_LOADED_MARKER")
+                .expect("set key-loaded marker"),
+        ),
+        b"loaded",
+    )
+    .expect("mark completed key load");
+    let ack = PathBuf::from(
+        std::env::var_os("MIDNIGHT_HASH_BENCH_KEY_LOADED_ACK")
+            .expect("set key-loaded acknowledgement"),
+    );
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !ack.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "sampler did not acknowledge key load"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    let opening: Fr = 7.into();
+    let value: Fr = 7.into();
+    let commitment = transient_commit(&[value], opening);
+    let public_transcript_inputs: Vec<Fr> = [0x70, 0x01, 0x01, 0x00, 0x0e, 0x01, 0xa1]
+        .into_iter()
+        .map(Fr::from)
+        .collect();
+    let preimage = ProofPreimage {
+        binding_input: 42.into(),
+        communications_commitment: Some((commitment, opening)),
+        inputs: vec![value],
+        private_transcript: vec![],
+        public_transcript_inputs: public_transcript_inputs.clone(),
+        public_transcript_outputs: vec![],
+        key_location: KeyLocation(Cow::Borrowed("hash-chain-bench")),
+    };
+    let resolver = KeyResolver { pk, vk, ir };
+    let heap_params = (arm == "heap")
+        .then(|| HeapParams(ParamsProver::read(&params_bytes[..]).expect("heap parameters")));
+    let mapped_params = (arm == "mapped").then(|| {
+        // The script is the sole owner of the artifact directory and never
+        // rewrites the published companion while a measured child lives.
+        let trusted = unsafe { TrustedParamsDir::new(&artifact_dir) };
+        MappedParams::new(NoFallback, trusted)
+    });
+    let proof_start = Instant::now();
+    let (proof, _) = if let Some(heap) = &heap_params {
+        preimage
+            .prove_with_context::<IrSource>(
+                ChaCha20Rng::from_seed([42; 32]),
+                heap,
+                &resolver,
+                &context,
+            )
+            .await
+            .expect("heap proof")
+    } else {
+        preimage
+            .prove_with_context::<IrSource>(
+                ChaCha20Rng::from_seed([42; 32]),
+                mapped_params.as_ref().expect("mapped provider"),
+                &resolver,
+                &context,
+            )
+            .await
+            .expect("mapped and spilled proof")
+    };
+    let prove_ms = proof_start.elapsed().as_secs_f64() * 1_000.0;
+    let public_inputs = [42.into(), commitment]
+        .into_iter()
+        .chain(public_transcript_inputs);
+    resolver
+        .vk
+        .verify(&verifier_params, &proof, public_inputs)
+        .expect("verify benchmark proof");
+    eprintln!(
+        "hash-chain-bench stage=prove arm={arm} k={k} rows={rows} key_load_ms={key_ms:.3} prove_ms={prove_ms:.3} proof_bytes={}",
+        proof.0.len()
+    );
 }
 
 async fn exercise_heap_and_mapped(
