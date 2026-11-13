@@ -30,6 +30,26 @@ and Wasm compile checks do not prove published-package resolution, exact-head
 CI, runtime browser behavior, or large-circuit memory and disk admission.
 The disposable harness and target are removed after this iteration.
 
+The next disposable Ledger9 proof-server build used local source patches for
+the candidate ZK, transient-crypto and ZKIR packages while leaving the
+released 0.8.2 root pin in the committed manifest. Cargo resolved one
+proofs 0.8.3 for the current v2/v3 paths, alongside the intentional proofs
+0.7.3 V0/V1 compatibility stack. The `zkir3_http_context` test passed a
+Compact-generated v3 `/prove` request using the tracked k=14 ceremony SRS,
+downsized to the test circuit, a mapped parameter companion, and forced
+coset spill (`MIDNIGHT_BENCH_REQUIRE_SPILL=1`). The in-tree ZKIR v2
+`proofs_v2_083_compat` test then passed all three minimal/ECC/hash-to-curve
+proofs on the same candidate graph. This is a local source test; the new
+package versions are not published, and it does not cover browser runtime,
+HTTP disconnect cancellation, representative k=18 load, or current-head CI.
+
+Refreshing this Ledger workspace lock exposed an independent resolver issue:
+the in-tree ZKIR v2 Wasm crate's `wasm-bindgen-test ^0.3.58` can select
+0.3.71, which requires `wasm-bindgen =0.2.121` while Ledger9 pins
+`=0.2.108`. The local candidate fixes the test dependency at 0.3.58,
+matching the existing lock. The disposable proof build used that constraint;
+the lockfile and source patches were restored before committing this note.
+
 This records the local integration for [betsudo/midnight-ledger#29](https://github.com/betsudo/midnight-ledger/issues/29) and [#30](https://github.com/betsudo/midnight-ledger/issues/30). It does not change Ledger8. Recheck upstream heads before publishing or rebasing.
 
 | Line | Baseline | Local head | Purpose |
