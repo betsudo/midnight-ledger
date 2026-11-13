@@ -2,7 +2,9 @@
 
 //! The released ZKIR v3 crate and Ledger9 must use the same mapped-parameter
 //! and proof implementation as the in-tree provider. This small circuit tests
-//! the actual crate boundary without a large proof or external parameter file.
+//! the actual crate boundary without a large proof. By default it generates
+//! parameters; `MIDNIGHT_LEDGER_TEST_CEREMONY_SRS` opts into a tracked
+//! Ledger9 parameter file for the heap/mapped comparison helper.
 
 use std::borrow::Cow;
 use std::io;
@@ -457,10 +459,24 @@ async fn exercise_heap_and_mapped(
             "forced-spill run must select this circuit's k"
         );
     }
-    let params = ParamsProver(Arc::new(ParamsKZG::<Bls12>::unsafe_setup(
-        k as u32,
-        ChaCha20Rng::from_seed([7; 32]),
-    )));
+    let params = if let Some(path) = std::env::var_os("MIDNIGHT_LEDGER_TEST_CEREMONY_SRS") {
+        // Exercise Ledger's actual trusted-file loader, then downsize the
+        // tracked k=14 file to this circuit's k. The ordinary test remains
+        // self-contained when the environment variable is absent.
+        let file = std::fs::File::open(path).expect("open ceremony SRS");
+        let loaded = ParamsProver::read(file).expect("read ceremony SRS through Ledger9");
+        let mut params = Arc::try_unwrap(loaded.0)
+            .ok()
+            .expect("freshly loaded SRS must have one owner");
+        assert!(params.max_k() >= k as u32);
+        params.downsize(k as u32);
+        ParamsProver(Arc::new(params))
+    } else {
+        ParamsProver(Arc::new(ParamsKZG::<Bls12>::unsafe_setup(
+            k as u32,
+            ChaCha20Rng::from_seed([7; 32]),
+        )))
+    };
     let mut params_bytes = Vec::new();
     params
         .0

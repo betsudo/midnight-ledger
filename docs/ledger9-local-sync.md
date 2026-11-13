@@ -160,3 +160,19 @@ the timing differences are inconclusive. This is synthetic SRS and one
 circuit; the default coset-spill floor remains k=18.
 Production SRS, load, disk capacity, and release-package alignment remain
 open.
+
+The opt-in Compact-generated v3 counter test can now use Ledger9's tracked
+`transient-crypto/static/bls_midnight_2p14` parameters by setting
+`MIDNIGHT_LEDGER_TEST_CEREMONY_SRS` to that file. Its SHA-256 is
+`fc253016885ec830e97808c9ec920bb5cab5c21af590380a6cb5eb0538e2b244`.
+Against local proofs `d86d96b5`, this Ledger consumer, and ZKIR v3
+`9976f4c`, the exact `compact_generated_zkir3_counter_uses_the_same_prover_paths`
+test passed with `zkir3-context` and the temporary local dependency patches.
+It loaded the file through `ParamsProver::read` (`RawBytesUnchecked`),
+downsized to the counter circuit's k, generated a key, proved with heap and
+private mapped-companion parameters, checked pre-cancelled context behavior,
+required equal seeded proof bytes, and verified both proofs. The same test
+passed without the environment variable to preserve its synthetic default.
+This is a direct proof-server integration test, not an HTTP request or a
+full-k=14 proof. The published Ledger9 dependency graph still uses proofs
+0.8.2; no release pin or remote branch was changed.
