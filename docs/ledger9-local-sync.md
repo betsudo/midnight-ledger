@@ -5,7 +5,7 @@ This records the release-compatible integration for [betsudo/midnight-ledger#29]
 | Line | Baseline | Local head | Purpose |
 | --- | --- | --- | --- |
 | Stable release | upstream `ledger-9.1.0.1` `a2b30128` | `sync/ledger9-9.1.0.1` `cf93b9e4` | Released proof format, external `midnight-zkir` 3.2.0 |
-| Current branch | upstream `ledger-9` `0978af43` | `sync/ledger9-current` (this checkout) | External `midnight-zkir` 3.2.1 and proof-server 9.0.2-rc.1 |
+| Current branch baseline | upstream `ledger-9` `b8f5e143` | `sync/ledger9-082-release-pr` (this checkout, PR #33) | External `midnight-zkir` 3.2.1 and proof-server 9.0.2-rc.1 |
 | ZK consumer | upstream-compatible proofs 0.8.2 | betsudo `397b2424b972b3ec338722839c109f01c2fcf9f1` | Exact `[patch.crates-io]` source for both Ledger9 lines |
 
 The current Cargo tree resolves one proofs **0.8.2** instance from that betsudo SHA for the v2 and v3 paths, local `midnight-transient-crypto` 3.1.0, local ZKIR v2 2.2.0, external ZKIR v3 3.2.1, and zk-stdlib 2.4.0. The additional registry proofs 0.7.3 and zk-stdlib 1.3.0 are the intentional V0/V1 compatibility stack, not a second 0.8.2 implementation. The stable release branch keeps its external ZKIR 3.2.0 tag and the same optimized proofs SHA. Upstream ZK `main` advertises proofs 0.8.3 with a changed transcript; it is a separate port target described in `betsudo/midnight-zk` branch `sync/proofs-0.8.3-port-plan`.
