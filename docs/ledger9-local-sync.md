@@ -110,8 +110,13 @@ The follow-up ZK branch `sync/proofs-083-key-load-stream` at
 `a395eed1ca4b1b207d52fc20871dbf350872d3ea` deserializes fixed and
 permutation Lagrange columns one at a time into reserved read-only mappings.
 The same three focused Ledger9 v3 consumer tests passed against that exact
-commit. Phase-0 coefficient derivation still materializes the whole group
-before mapping it, so load-time peak memory is not yet bounded by one column.
-Load/proof RSS, disk measurements, current-head CI, wasm, and artifact
-compatibility remain open. Existing betsudo Ledger issue #30 owns the v2 and
-v3 acceptance gate.
+commit. The next ZK branch `sync/proofs-083-phase0-stream` at
+`7ecf7190ba680808d7a04a0323adb2b713c25f0c` derives each phase-0
+coefficient column into a reserved mapping before processing the next. Its
+local proof test compares seeded KZG proof bytes across generated mapped,
+deserialized mapped, and heap keys, and verifies mapped FFLONK keys. The same
+three focused Ledger9 v3 consumer tests pass against this exact commit.
+Keygen and the three extended-domain Lagrange polynomials still allocate on
+the heap. Load/proof RSS, disk measurements, current-head CI, wasm, and
+artifact compatibility remain open. Existing betsudo Ledger issue #30 owns
+the v2 and v3 acceptance gate.
