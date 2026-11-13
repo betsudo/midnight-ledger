@@ -7,6 +7,9 @@ on:
     branches:
       - 'ledger-*'
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -65,10 +68,7 @@ jobs:
         with:
           primary-key: nix-${{ runner.os }}-${{ hashFiles('**/*.nix', '**/flake.lock') }}
           restore-prefixes-first-match: nix-${{ runner.os }}-
-          purge: true
-          purge-prefixes: nix-${{ runner.os }}-
-          purge-primary-key: never
-          purge-created: P7D
+          purge: false
 
       - name: Configure cargo
         run: .github/scripts/configure-cargo.sh
@@ -155,10 +155,7 @@ jobs:
         with:
           primary-key: nix-${{ runner.os }}-${{ hashFiles('**/*.nix', '**/flake.lock') }}
           restore-prefixes-first-match: nix-${{ runner.os }}-
-          purge: true
-          purge-prefixes: nix-${{ runner.os }}-
-          purge-primary-key: never
-          purge-created: P7D
+          purge: false
 
       - name: Configure cargo
         run: .github/scripts/configure-cargo.sh
@@ -242,10 +239,7 @@ jobs:
         with:
           primary-key: nix-${{ runner.os }}-${{ hashFiles('**/*.nix', '**/flake.lock') }}
           restore-prefixes-first-match: nix-${{ runner.os }}-
-          purge: true
-          purge-prefixes: nix-${{ runner.os }}-
-          purge-primary-key: never
-          purge-created: P7D
+          purge: false
 
       - name: Configure cargo
         run: .github/scripts/configure-cargo.sh
@@ -320,10 +314,7 @@ jobs:
         with:
           primary-key: nix-${{ runner.os }}-${{ hashFiles('**/*.nix', '**/flake.lock') }}
           restore-prefixes-first-match: nix-${{ runner.os }}-
-          purge: true
-          purge-prefixes: nix-${{ runner.os }}-
-          purge-primary-key: never
-          purge-created: P7D
+          purge: false
 
       - name: Configure cargo
         run: .github/scripts/configure-cargo.sh
