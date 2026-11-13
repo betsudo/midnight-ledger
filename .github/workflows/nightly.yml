@@ -2,8 +2,6 @@ name: Ledger Build and Test All
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 5 * * *"
 
 permissions:
   contents: read
@@ -23,6 +21,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  #v7.0.1
 
+      - name: Free up runner disk space
+        if: runner.os == 'Linux' && runner.environment == 'github-hosted'
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
+          df -h /
+
       - name: Install Nix
         uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24
         with:
@@ -38,7 +43,6 @@ jobs:
             # block merely contains that substring (install-nix.sh:60).
             experimental-features = nix-command flakes configurable-impure-env
             impure-env = NIX_CURL_FLAGS=-Amidnight-ledger/1.0
-            access-tokens = github.com=${{ secrets.GH_PASSWORD || secrets.GITHUB_TOKEN }} api.github.com=${{ secrets.GH_PASSWORD || secrets.GITHUB_TOKEN }}
             extra-trusted-public-keys = hydra.iohk.io:f/Ea+s+dFdN+3Y/G+FDgSq+a5NEWhJGzdjvKNGv0/EQ=
             extra-substituters = https://cache.iog.io file://${{ runner.temp }}/nix-binary-cache
             accept-flake-config = true
