@@ -1,5 +1,35 @@
 # Local Ledger9 fork sync and proof migration
 
+## 0.8.3 package graph candidate (local only)
+
+The separate local candidate heads advance proofs 0.8.3, stdlib 2.5.0,
+base-crypto 1.1.2, transient-crypto 3.2.0, and external ZKIR/Wasm 3.3.0.
+Circuits remains 7.3.0 because this port has no local circuits source change.
+The transient and ZKIR manifests now set floors that require the context
+adapter sources. This is staged separately from the qualified Ledger9
+0.8.2 pin and cannot be resolved from released packages yet.
+
+An isolated Cargo harness with local source patches resolved exactly one
+proofs 0.8.3, stdlib 2.5.0, transient-crypto 3.2.0, and ZKIR 3.3.0, then
+passed `cargo check --offline --locked` for native and
+`wasm32-unknown-unknown`. The unlocked first Wasm resolution failed:
+`midnight-base-crypto`'s `atomic-write-file ^0.3.0` selected 0.3.1, which
+pulled `getrandom` 0.4 without the Wasm backend. Both existing Ledger and
+ZKIR locks used 0.3.0. The candidate base-crypto 1.1.2 therefore pins
+`atomic-write-file =0.3.0`; a fresh unlocked resolution selected that
+version and both native and Wasm checks passed. The harness also resolves
+`midnight-curves` 0.2.1 only through the external `sha3-circuit` and 0.3.1
+for this stack; it has no duplicate 0.8.3 proofs crate.
+
+Release order for this candidate is proofs/stdlib and base-crypto first,
+then transient-crypto, then ZKIR, then a deliberate Ledger9 repin and
+lockfile update. The candidate manifest branches are not yet a publishable
+workspace: their respective release dependencies are not available in the
+registry, and the Ledger root intentionally retains its 0.8.2 patch. Native
+and Wasm compile checks do not prove published-package resolution, exact-head
+CI, runtime browser behavior, or large-circuit memory and disk admission.
+The disposable harness and target are removed after this iteration.
+
 This records the local integration for [betsudo/midnight-ledger#29](https://github.com/betsudo/midnight-ledger/issues/29) and [#30](https://github.com/betsudo/midnight-ledger/issues/30). It does not change Ledger8. Recheck upstream heads before publishing or rebasing.
 
 | Line | Baseline | Local head | Purpose |

@@ -1,6 +1,6 @@
 [package]
 name = "midnight-transient-crypto"
-version = "3.1.0"
+version = "3.2.0"
 edition = "2024"
 license.workspace = true
 repository.workspace = true
@@ -21,7 +21,7 @@ public-internal-structure = []
 test-utilities = []
 
 [dependencies]
-base-crypto = { version = "1.1.1", path = "../base-crypto", package = "midnight-base-crypto" }
+base-crypto = { version = "1.1.2", path = "../base-crypto", package = "midnight-base-crypto" }
 derive = { version = "1.1.0", path = "../base-crypto-derive", package = "midnight-base-crypto-derive" }
 serialize = { version = "1.2.1", path = "../serialize", package = "midnight-serialize" }
 storage-core = { version = "1.2.3", path = "../storage-core", package = "midnight-storage-core" }
@@ -31,9 +31,9 @@ group = "^0.13.0"
 midnight-curves = { version = "^0.3.1" }
 # Features are requested per target below, because disk spill requires mmap
 # and neither feature is available to wasm consumers.
-midnight-proofs = { version = "^0.8.2" }
+midnight-proofs = { version = "^0.8.3" }
 midnight-circuits = { version = "^7.3.0" }
-midnight-zk-stdlib = { version = "^2.4.0" }
+midnight-zk-stdlib = { version = "^2.5.0" }
 anyhow = { version = "^1.0.102" }
 lru = "0.18.0"
 # `memmap2` is declared per-target below, alongside the midnight-proofs
@@ -74,7 +74,7 @@ futures = { version = "^0.3.31" }
 # midnight-proofs with neither the code nor the `memmap2`/`tempfile`
 # dependencies in its bundle.
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-midnight-proofs = { version = "^0.8.2", features = ["disk-spill"] }
+midnight-proofs = { version = "^0.8.3", features = ["disk-spill"] }
 # `read_mmap_path` opens the companion SRS file via `memmap2` and hands
 # the `Arc<Mmap>` to the patched midnight-proofs' `read_mmap_arc`. The
 # companion lives in the app cache dir and the mapping is read-only.
