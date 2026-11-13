@@ -60,14 +60,13 @@ lto = true
 codegen-units = 1
 panic = "abort"
 
-# Because we pull in older, crates.io versions of `transient-crypto`, we need
-# to force these to resolve locally for a local build. These patches not being
-# present in consumer builds is fine, as they don't/shouldn't *want* the local
-# packages.
+# Keep the released 0.8.2 proof format while selecting the additive context
+# adapters by immutable source commits. The V2 path still uses the in-tree IR.
 [patch.crates-io]
-# The released Ledger9 proof line is 0.8.2. Pin the reviewed mmap/spill
-# branch by commit so checkout branch changes cannot silently drop the patch.
-midnight-proofs = { git = "https://github.com/betsudo/midnight-zk", rev = "397b2424b972b3ec338722839c109f01c2fcf9f1" }
+midnight-curves = { git = "https://github.com/betsudo/midnight-zk", rev = "b59d7e254fc2feb753449ad78a9e3740bb56b898" }
+midnight-proofs = { git = "https://github.com/betsudo/midnight-zk", rev = "b59d7e254fc2feb753449ad78a9e3740bb56b898" }
+midnight-zk-stdlib = { git = "https://github.com/betsudo/midnight-zk", rev = "b59d7e254fc2feb753449ad78a9e3740bb56b898" }
+midnight-zkir = { git = "https://github.com/betsudo/midnight-zkir", rev = "44ce51ea968edc93cbb1b45386def95e4fd32efc" }
 midnight-base-crypto = { path = "base-crypto" }
 midnight-serialize = { path = "serialize" }
 # midnight-zkir v3 asks crates.io for transient-crypto ^3.0.0; resolve it to

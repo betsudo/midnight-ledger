@@ -11,6 +11,7 @@ use std::time::Instant;
 
 use base_crypto::data_provider::MidnightDataProvider;
 use midnight_curves::Bls12;
+use midnight_proofs::config::{CancelToken, ProverConfig, ProverContext};
 use midnight_proofs::poly::kzg::params::ParamsKZG;
 use midnight_proofs::utils::SerdeFormat;
 use rand::SeedableRng;
@@ -182,7 +183,12 @@ async fn exercise_heap_and_mapped(
     public_inputs.extend(preimage.public_transcript_inputs.iter().copied());
     let heap_start = Instant::now();
     let (heap_proof, _) = preimage
-        .prove::<IrSource>(rng(), &heap, &resolver)
+        .prove_with_context::<IrSource>(
+            rng(),
+            &heap,
+            &resolver,
+            &ProverContext::new(ProverConfig::heap()),
+        )
         .await
         .expect("heap proof");
     let heap_elapsed = heap_start.elapsed();
@@ -190,6 +196,22 @@ async fn exercise_heap_and_mapped(
         .vk
         .verify(&verifier_params, &heap_proof, public_inputs.iter().copied())
         .expect("verify heap proof");
+
+    let cancelled = CancelToken::new();
+    cancelled.cancel();
+    let error = preimage
+        .prove_with_context::<IrSource>(
+            rng(),
+            &heap,
+            &resolver,
+            &ProverContext::new(ProverConfig::heap()).with_cancel(cancelled),
+        )
+        .await
+        .expect_err("cancelled request must stop before key resolution");
+    assert!(matches!(
+        error.downcast_ref::<midnight_proofs::plonk::Error>(),
+        Some(midnight_proofs::plonk::Error::Cancelled { .. })
+    ));
 
     let dir = tempfile::tempdir().expect("private companion dir");
     // The test owns this temporary directory, publishes the companion only
@@ -203,7 +225,12 @@ async fn exercise_heap_and_mapped(
     let mapped = MappedParams::new(NoFallback, trusted);
     let mapped_start = Instant::now();
     let (mapped_proof, _) = preimage
-        .prove::<IrSource>(rng(), &mapped, &resolver)
+        .prove_with_context::<IrSource>(
+            rng(),
+            &mapped,
+            &resolver,
+            &ProverContext::new(ProverConfig::process().clone()),
+        )
         .await
         .expect("mapped proof");
     let mapped_elapsed = mapped_start.elapsed();

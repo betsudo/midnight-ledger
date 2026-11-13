@@ -31,6 +31,7 @@ use ledger::structure::{
     INITIAL_TRANSACTION_COST_MODEL, ProofPreimageMarker, ProofPreimageVersioned, ProofVersioned,
     Signature, Transaction,
 };
+use midnight_proofs::config::{ProverConfig, ProverContext};
 use rand::rngs::OsRng;
 use serialize::{tagged_deserialize, tagged_serialize};
 use std::borrow::Cow;
@@ -371,9 +372,11 @@ pub(crate) async fn prove(
                             ),
                         };
 
-                        let proof = versioned_ir::prove(ppi, &proving_data.ir_source, &resolver)
-                            .await?
-                            .0;
+                        let context = ProverContext::new(ProverConfig::process().clone());
+                        let proof =
+                            versioned_ir::prove(ppi, &proving_data.ir_source, &resolver, &context)
+                                .await?
+                                .0;
 
                         ProofVersioned::V2(proof)
                     }
