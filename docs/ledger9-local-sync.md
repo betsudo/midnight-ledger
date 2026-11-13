@@ -105,7 +105,13 @@ circuits, stdlib, and ZKIR, plus a Git-source patch for the external SHA3
 circuit's proofs dependency. The registry curves package lacks APIs required
 by this local 0.8.3 proofs branch, so the result does not establish a released
 dependency build. The released Ledger9 consumer stays pinned to proofs 0.8.2.
-The 0.8.3 mapped-key load still builds the full key in memory before mapping
-it, and load/proof RSS, disk measurements, current-head CI, wasm, and artifact
+
+The follow-up ZK branch `sync/proofs-083-key-load-stream` at
+`a395eed1ca4b1b207d52fc20871dbf350872d3ea` deserializes fixed and
+permutation Lagrange columns one at a time into reserved read-only mappings.
+The same three focused Ledger9 v3 consumer tests passed against that exact
+commit. Phase-0 coefficient derivation still materializes the whole group
+before mapping it, so load-time peak memory is not yet bounded by one column.
+Load/proof RSS, disk measurements, current-head CI, wasm, and artifact
 compatibility remain open. Existing betsudo Ledger issue #30 owns the v2 and
 v3 acceptance gate.
