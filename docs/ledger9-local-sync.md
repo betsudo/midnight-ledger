@@ -298,3 +298,29 @@ the candidate did not compile against the current registry curves/circuits:
 the proofs and circuits sources refer to APIs missing from their published
 same-version packages. The committed Ledger9 lockfile and release pin were
 restored; this is a local-source gate, not a released-package or CI gate.
+
+The opt-in v3 HTTP test now also accepts
+`MIDNIGHT_LEDGER_TEST_CEREMONY_FULL_K=1` together with
+`MIDNIGHT_LEDGER_TEST_CEREMONY_SRS` pointing to the tracked Ledger9 k=14
+file. It keeps the SRS at k=14 for v3 keygen and registers the private mapped
+companion under the loaded parameter k, which is the k requested during
+proof self-verification. On the local proofs `de847239`, ZKIR v3 `e0e08f7`,
+and Ledger consumer based on `99f88696`, the focused `zkir3-context`
+`prove_endpoint_accepts_v3_with_mapped_params` test returned an HTTP proof
+and verified it. The same full-k test passed with
+`MIDNIGHT_SPILL_COSETS=1`, `MIDNIGHT_SPILL_FLOOR_K=0`, and
+`MIDNIGHT_BENCH_REQUIRE_SPILL=1`; the test asserts that the spill policy
+selects the circuit, and the bench-internal prover gate rejects a failed
+spill instead of silently accepting heap fallback. Its ordinary
+synthetic-SRS path passed again after the provider-key change. The temporary
+Cargo graph resolved one local proofs 0.8.3 for the v2/v3 line; its 0.7.3
+proofs package remained for legacy
+compatibility. The test circuit has fewer rows than k=14 capacity, so this
+checks full-size parameter consumption and server routing, not a k=14-sized
+workload, memory benefit, released-package graph, or current-head CI.
+After restoring the committed manifest and lockfile, the same branch's
+`cargo test --locked` could not resolve `midnight-zk-stdlib ^2.5.0` required
+by its local `midnight-transient-crypto` 3.2.0: the registry offered 2.4.0
+as its latest matching line at this check. This is a package availability
+gate, not a failing full-k proof; the released Ledger9 branch must be tested
+separately on its 0.8.2 / stdlib 2.4.0 graph.

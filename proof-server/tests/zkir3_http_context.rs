@@ -43,6 +43,11 @@ async fn prove_endpoint_accepts_v3_with_mapped_params() {
     let ir = IrSource::load(include_str!("compact-v3-counter/increment.zkir").as_bytes())
         .expect("load Compact-generated v3 IR");
     let k = ir.k();
+    let full_ceremony_k = std::env::var_os("MIDNIGHT_LEDGER_TEST_CEREMONY_FULL_K").is_some();
+    assert!(
+        !full_ceremony_k || std::env::var_os("MIDNIGHT_LEDGER_TEST_CEREMONY_SRS").is_some(),
+        "full-k gate requires the tracked Ledger9 SRS file"
+    );
     if std::env::var("MIDNIGHT_SPILL_COSETS").as_deref() == Ok("1") {
         assert!(
             ProverConfig::process().spills_cosets_at(k as u32),
@@ -56,7 +61,11 @@ async fn prove_endpoint_accepts_v3_with_mapped_params() {
             .ok()
             .expect("freshly loaded SRS must have one owner");
         assert!(params.max_k() >= k as u32);
-        params.downsize(k as u32);
+        if full_ceremony_k {
+            assert_eq!(params.max_k(), 14, "full-k gate expects Ledger9's k=14 SRS");
+        } else {
+            params.downsize(k as u32);
+        }
         ParamsProver(Arc::new(params))
     } else {
         ParamsProver(Arc::new(ParamsKZG::<Bls12>::unsafe_setup(
@@ -64,6 +73,7 @@ async fn prove_endpoint_accepts_v3_with_mapped_params() {
             ChaCha20Rng::from_seed([7; 32]),
         )))
     };
+    let params_k = u8::try_from(params.0.max_k()).expect("SRS k fits the provider key");
     let mut params_bytes = Vec::new();
     params
         .0
@@ -81,7 +91,7 @@ async fn prove_endpoint_accepts_v3_with_mapped_params() {
     let trusted = unsafe { TrustedParamsDir::new(dir.path()) };
     let cache = CompanionCache::from_trusted_dir(trusted.clone());
     cache
-        .open_or_build(&MidnightDataProvider::name_k(k), || Ok(params))
+        .open_or_build(&MidnightDataProvider::name_k(params_k), || Ok(params))
         .expect("publish companion");
     ZswapResolver::configure_mapped_params_dir(trusted).expect("configure mapped params");
 
