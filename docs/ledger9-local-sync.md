@@ -5,12 +5,12 @@ This records the release-compatible integration for [betsudo/midnight-ledger#29]
 | Line | Baseline | Local head | Purpose |
 | --- | --- | --- | --- |
 | Stable release | upstream `ledger-9.1.0.1` `a2b30128` | `sync/ledger9-9.1.0.1` `cf93b9e4` | Released proof format, external `midnight-zkir` 3.2.0 |
-| Current branch baseline | upstream `ledger-9` `0978af43` | `sync/ledger9-current`, PR #33 | External `midnight-zkir` 3.2.1 and proof-server 9.0.2-rc.1 |
+| Current branch baseline | upstream `ledger-9` `b8f5e143` | `sync/ledger9-082-release-pr`, PR #33 | External `midnight-zkir` 3.2.1 and proof-server 9.0.2-rc.1 |
 | Context follow-up | PR #33 | `sync/ledger9-082-context` (this checkout) | Request-owned V3 proving context and released-source ZK pins |
 | ZK stable baseline | upstream-compatible proofs 0.8.2 | betsudo `397b2424b972b3ec338722839c109f01c2fcf9f1` | Exact `[patch.crates-io]` source on the stable-tag and PR #33 baselines |
-| ZK context source | published circuits 7.3.0 and stdlib 2.4.0, optimized proofs 0.8.2 | betsudo `b59d7e254fc2feb753449ad78a9e3740bb56b898` | Exact source for this follow-up; see the ZK source alignment note |
+| ZK context source | published circuits 7.3.0 and stdlib 2.4.0, optimized proofs 0.8.2 | betsudo `6b71786dcd60833377f22417643e8ccd48b60758` | Exact source for this follow-up; see the ZK source alignment note |
 
-The follow-up Cargo tree resolves one proofs **0.8.2** instance from `b59d7e25` for the V2 and V3 paths, local `midnight-transient-crypto` 3.1.0, local ZKIR v2 2.2.0, forked ZKIR v3 3.2.1 at `44ce51ea`, and forked zk-stdlib 2.4.0. The additional registry proofs 0.7.3 and zk-stdlib 1.3.0 are the intentional V0/V1 compatibility stack, not a second 0.8.2 implementation. The stable release branch keeps its external ZKIR 3.2.0 tag and the prior optimized proofs SHA. Upstream ZK `main` has moved to proofs 0.9.0-rc.1 with changed proof interfaces; it is a separate port target.
+The follow-up Cargo tree resolves one proofs **0.8.2** instance from `6b71786d` for the V2 and V3 paths, local `midnight-transient-crypto` 3.1.0, local ZKIR v2 2.2.0, forked ZKIR v3 3.2.1 at `44ce51ea`, and forked zk-stdlib 2.4.0. ZKIR `3c4e2a6a` requires the key-policy helpers in Ledger PR #36 and will be pinned there. The additional registry proofs 0.7.3 and zk-stdlib 1.3.0 are the intentional V0/V1 compatibility stack, not a second 0.8.2 implementation. The stable release branch keeps its external ZKIR 3.2.0 tag and the prior optimized proofs SHA. Upstream ZK `main` has moved to proofs 0.9.0-rc.1 with changed proof interfaces; it is a separate port target.
 
 ## Disposition of the old `ledger-9-patched` commits
 
