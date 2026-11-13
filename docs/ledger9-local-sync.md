@@ -117,8 +117,8 @@ local proof test compares seeded KZG proof bytes across generated mapped,
 deserialized mapped, and heap keys, and verifies mapped FFLONK keys. The same
 three focused Ledger9 v3 consumer tests pass against this exact commit.
 Keygen and the three extended-domain Lagrange polynomials still allocate on
-the heap. Representative `k>=18` load/proof memory and disk measurements,
-current-head CI, wasm, and artifact compatibility remain open. Existing
+the heap. At that commit, representative `k>=18` load/proof memory and disk
+measurements, current-head CI, wasm, and artifact gates remained open. Existing
 betsudo Ledger issue #30 owns
 the v2 and v3 acceptance gate.
 
@@ -130,3 +130,19 @@ in these single samples. The commands, four policy configurations, and
 measurement limits are in the [fixture README](../proof-server/tests/compact-v3-hash-chain/README.md).
 This is not a `k=18` crossover or throughput result; keep the default floor
 until a representative larger-circuit gate establishes it.
+
+The later local 0.8.3 stack at proofs `8c2459bd`, this Ledger consumer
+`109fe868`, and ZKIR v3 adapter `9976f4c` passed the proof-server's
+`zkir3_mapped_params` test (7 passed; 4 intentionally ignored measurement
+arms), the opt-in v3 HTTP context test (1), policy-cache concurrency test
+(1), and all three in-tree ZKIR v2 compatibility proofs. The server tests
+exercise generated heap and mapped/spilled proofs, byte equality, wrong
+statements, cancellation, and policy isolation at the local patched graph.
+ZKIR v3's 53 library tests and browser Wasm compile check also passed at
+these local source heads. The new proofs key payload carries VK version
+`0x04`; its 0.8.2 fixture gate is recorded in the ZK port note. Cargo used
+temporary local source patches and a disposable lockfile update; this does
+not establish released-package alignment, browser runtime behavior,
+production SRS compatibility, or current-head CI. Upstream ZK `main`
+`20b10959`, Ledger `ledger-9` `0978af43`, and ZKIR `zkir-v3` `f7b433d`
+were unchanged at this check.
