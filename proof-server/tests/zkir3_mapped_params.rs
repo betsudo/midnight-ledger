@@ -28,6 +28,10 @@ use transient_crypto::proofs::{
 };
 use zkir_v3::IrSource;
 
+// The policy cache is process-wide. Keep cache-hit assertions isolated from
+// other tests in this binary that build different keys.
+static POLICY_CACHE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 struct HeapParams(ParamsProver);
 
 impl ParamsProverProvider for HeapParams {
@@ -68,6 +72,7 @@ impl Resolver for KeyResolver {
 
 #[actix_web::test]
 async fn generated_v3_key_proves_with_matching_policy_but_rejects_mapped_key_request() {
+    let _cache_test = POLICY_CACHE_TEST_LOCK.lock().await;
     let ir = IrSource::load(
         &br#"{
             "version": { "major": 3, "minor": 0 },
@@ -162,6 +167,7 @@ async fn generated_v3_key_proves_with_matching_policy_but_rejects_mapped_key_req
 
 #[actix_web::test]
 async fn explicit_key_cache_reuses_only_the_same_policy() {
+    let _cache_test = POLICY_CACHE_TEST_LOCK.lock().await;
     let ir = IrSource::load(
         &br#"{
             "version": { "major": 3, "minor": 0 },
@@ -195,6 +201,26 @@ async fn explicit_key_cache_reuses_only_the_same_policy() {
         .expect("cached heap key");
     assert!(Arc::ptr_eq(&first, &same));
 
+    // A second circuit key must not evict a heap key just because the
+    // explicit-policy path has a stricter retention limit for mapped files.
+    let other_params = ParamsProver(Arc::new(ParamsKZG::<Bls12>::unsafe_setup(
+        ir.k() as u32,
+        ChaCha20Rng::from_seed([10; 32]),
+    )));
+    let (other_generated, _) = ir
+        .keygen(&HeapParams(other_params))
+        .await
+        .expect("other keygen");
+    let mut other_bytes = Vec::new();
+    tagged_serialize(&other_generated, &mut other_bytes).expect("serialize other key");
+    let other_key: ProverKey<IrSource> =
+        tagged_deserialize(io::Cursor::new(&other_bytes)).expect("deserialize other key");
+    let _other = other_key.init_with_policy(&heap).expect("other heap key");
+    let first_again = deserialize()
+        .init_with_policy(&heap)
+        .expect("first heap key retained");
+    assert!(Arc::ptr_eq(&first, &first_again));
+
     let spill_dir = tempfile::tempdir().expect("mapped-key directory");
     let mut mapped = ProverConfig::mapped_key();
     mapped.spill_dir = Some(spill_dir.path().to_path_buf());
@@ -215,6 +241,7 @@ async fn explicit_key_cache_reuses_only_the_same_policy() {
 
 #[actix_web::test]
 async fn unavailable_v3_key_storage_rejects_and_coset_spill_falls_back() {
+    let _cache_test = POLICY_CACHE_TEST_LOCK.lock().await;
     let ir = IrSource::load(
         &br#"{
             "version": { "major": 3, "minor": 0 },
@@ -303,6 +330,7 @@ async fn unavailable_v3_key_storage_rejects_and_coset_spill_falls_back() {
 
 #[actix_web::test]
 async fn zkir3_heap_and_mapped_params_produce_the_same_valid_proof() {
+    let _cache_test = POLICY_CACHE_TEST_LOCK.lock().await;
     let ir = IrSource::load(
         &br#"{
             "version": { "major": 3, "minor": 0 },
@@ -318,6 +346,7 @@ async fn zkir3_heap_and_mapped_params_produce_the_same_valid_proof() {
 
 #[actix_web::test]
 async fn compact_generated_zkir3_counter_uses_the_same_prover_paths() {
+    let _cache_test = POLICY_CACHE_TEST_LOCK.lock().await;
     // Compact 0.36.1 (7fa3a117c) emitted this ZKIR 3.1 circuit from the
     // adjacent counter.compact source with --skip-zk. It exercises an actual
     // Ledger9 impact and communications-commitment path.
@@ -352,6 +381,7 @@ fn compact_generated_zkir3_hash_chain_cost_model() {
 #[actix_web::test]
 #[ignore = "focused Ledger9 proof timing; run explicitly with or without forced spill"]
 async fn compact_generated_zkir3_hash_chain_proof_timing() {
+    let _cache_test = POLICY_CACHE_TEST_LOCK.lock().await;
     let ir = IrSource::load(include_str!("compact-v3-hash-chain/hashAndIncrement.zkir").as_bytes())
         .expect("load Compact-generated v3 hash-chain IR");
     let opening: Fr = 7.into();
@@ -374,6 +404,7 @@ async fn compact_generated_zkir3_hash_chain_proof_timing() {
 #[actix_web::test]
 #[ignore = "separate-process high-k policy benchmark; use hash_chain_policy_smoke.py"]
 async fn compact_generated_zkir3_hash_chain_policy_benchmark() {
+    let _cache_test = POLICY_CACHE_TEST_LOCK.lock().await;
     let ir = IrSource::load(include_str!("compact-v3-hash-chain/hashAndIncrement.zkir").as_bytes())
         .expect("load Compact-generated v3 hash-chain IR");
     let k = ir.k();

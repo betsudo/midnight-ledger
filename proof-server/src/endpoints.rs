@@ -105,6 +105,10 @@ async fn wait_for_proof_job(
     cancel: &CancelToken,
 ) -> Result<Vec<u8>, Error> {
     match tokio::time::timeout(pool.job_timeout(), JobStatus::wait_for_success(updates)).await {
+        Ok(Err(WorkError::TimedOut)) => {
+            cancel.cancel();
+            Err(ErrorRequestTimeout("proof job timed out"))
+        }
         Ok(result) => result.map_err(Into::into),
         Err(_) => {
             cancel.cancel();

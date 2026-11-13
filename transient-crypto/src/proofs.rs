@@ -895,8 +895,10 @@ impl<T: Zkir + Tagged> Tagged for ProverKey<T> {
 
 const PK_CACHE_SIZE: usize = 5;
 // Explicit-policy keys are kept separately from the legacy bytes-only cache.
-// One entry bounds the mapped files held open after a request completes.
-const PK_POLICY_CACHE_SIZE: usize = 1;
+// Keep the legacy number of heap keys, while bounding mapped files held open
+// after a request completes to one entry.
+const PK_POLICY_HEAP_CACHE_SIZE: usize = PK_CACHE_SIZE;
+const PK_POLICY_MAPPED_CACHE_SIZE: usize = 1;
 
 struct PolicyKeyCacheEntry {
     hash: HashOutput,
@@ -910,7 +912,7 @@ lazy_static! {
     static ref PK_CACHE: Mutex<LruCache<HashOutput, Arc<dyn Any + Send + Sync>>> =
         Mutex::new(LruCache::new(NonZeroUsize::new(PK_CACHE_SIZE).unwrap()));
     static ref PK_POLICY_CACHE: Mutex<VecDeque<PolicyKeyCacheEntry>> =
-        Mutex::new(VecDeque::with_capacity(PK_POLICY_CACHE_SIZE));
+        Mutex::new(VecDeque::with_capacity(PK_POLICY_HEAP_CACHE_SIZE + PK_POLICY_MAPPED_CACHE_SIZE));
     // Admit one explicit-policy key build at a time. Cache hits do not wait.
     static ref PK_POLICY_BUILD_LOCK: Mutex<()> = Mutex::new(());
 }
@@ -1107,9 +1109,9 @@ impl<T: Zkir> ProverKey<T> {
     /// Load a lazy key under the caller's policy without changing this key's
     /// state or using the bytes-only process cache. A subsequent request with
     /// another policy must not inherit this request's storage decisions.
-    /// The separate policy cache retains at most one initialized key, including
-    /// any mapped files it owns. A process-wide build gate prevents concurrent
-    /// misses from constructing multiple keys at once.
+    /// The separate policy cache retains up to five heap keys and one mapped
+    /// key. A process-wide build gate prevents concurrent misses from
+    /// constructing multiple large keys at once.
     pub fn init_with_policy(
         &self,
         policy: &ProverConfig,
@@ -1214,7 +1216,17 @@ impl<T: Zkir> ProverKey<T> {
                 policy: policy.clone(),
                 key: key.clone(),
             });
-            cache.truncate(PK_POLICY_CACHE_SIZE);
+            let mut heap_keys = 0;
+            let mut mapped_keys = 0;
+            cache.retain(|entry| {
+                if entry.policy.map_prover_key {
+                    mapped_keys += 1;
+                    mapped_keys <= PK_POLICY_MAPPED_CACHE_SIZE
+                } else {
+                    heap_keys += 1;
+                    heap_keys <= PK_POLICY_HEAP_CACHE_SIZE
+                }
+            });
         }
         Ok(key)
     }

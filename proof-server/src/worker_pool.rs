@@ -12,7 +12,8 @@
 // limitations under the License.
 
 use actix_web::error::{
-    ErrorBadRequest, ErrorInternalServerError, ErrorPreconditionRequired, ErrorTooManyRequests,
+    ErrorBadRequest, ErrorInternalServerError, ErrorPreconditionRequired, ErrorRequestTimeout,
+    ErrorTooManyRequests,
 };
 use async_channel::{Receiver, RecvError, Sender, bounded, unbounded};
 use std::collections::HashMap;
@@ -44,6 +45,8 @@ pub enum WorkError {
     CancelledUnexpectedly,
     #[error("task join error")]
     JoinError,
+    #[error("job timed out")]
+    TimedOut,
 }
 
 impl From<WorkError> for actix_web::Error {
@@ -53,6 +56,7 @@ impl From<WorkError> for actix_web::Error {
             e @ WorkError::InternalError(_) => ErrorInternalServerError(e),
             e @ WorkError::CancelledUnexpectedly => ErrorInternalServerError(e),
             e @ WorkError::JoinError => ErrorInternalServerError(e),
+            e @ WorkError::TimedOut => ErrorRequestTimeout(e),
         }
     }
 }
@@ -251,7 +255,16 @@ impl Requests {
         }
         let removed = keys_to_remove
             .into_iter()
-            .filter_map(|key| reqs.remove(&key))
+            .filter_map(|key| {
+                let job = reqs.remove(&key)?;
+                // A handler may still be waiting on this job when GC wins the
+                // deadline race. Deliver an explicit timeout before dropping
+                // the last sender, so it cannot observe a closed channel as 500.
+                let _ = job
+                    .update_sender
+                    .try_send(JobStatus::Error(WorkError::TimedOut));
+                Some(job)
+            })
             .collect::<Vec<_>>();
         drop(reqs);
         // Releasing a captured proof request can be expensive; do it after
@@ -465,6 +478,34 @@ mod tests {
             JobStatus::Processing
         ));
         assert_eq!(work().unwrap(), Vec::<u8>::new());
+    }
+
+    #[tokio::test]
+    async fn gc_reports_timeout_to_waiting_handler_before_dropping_job() {
+        let requests = Requests::new(1, Duration::ZERO);
+        let released = Arc::new(AtomicBool::new(false));
+        let captured = DropProbe(released.clone());
+        let (id, updates) = requests
+            .new_req(Box::new(move || {
+                drop(captured);
+                Ok(Vec::new())
+            }))
+            .await
+            .expect("submit expiring job");
+
+        requests.gc().await;
+
+        assert!(requests.get(id).await.is_none());
+        assert!(released.load(Ordering::SeqCst));
+        assert_eq!(
+            JobStatus::wait_for_success(&updates).await,
+            Err(WorkError::TimedOut)
+        );
+        let http_error: actix_web::Error = WorkError::TimedOut.into();
+        assert_eq!(
+            http_error.as_response_error().status_code(),
+            actix_web::http::StatusCode::REQUEST_TIMEOUT
+        );
     }
 
     #[tokio::test]
