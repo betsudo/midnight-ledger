@@ -110,12 +110,31 @@ async fn generated_v3_key_proves_with_matching_policy_but_rejects_mapped_key_req
             &heap,
             pk.clone(),
             &preimage,
-            &ProverContext::new(process_policy),
+            &ProverContext::new(process_policy.clone()),
         )
         .await
         .expect("directly generated key proves with matching policy");
     vk.verify(&verifier_params, &proof, public_inputs.into_iter())
         .expect("verify direct keygen proof");
+
+    let spill_dir = tempfile::tempdir().expect("private coset-spill directory");
+    let mut proof_only_policy = process_policy;
+    proof_only_policy.spill_cosets = true;
+    proof_only_policy.coset_spill_floor_k = 0;
+    proof_only_policy.spill_dir = Some(spill_dir.path().to_path_buf());
+    assert!(!proof_only_policy.map_prover_key);
+    let (proof, public_inputs, _) = ir
+        .prove_with_context(
+            ChaCha20Rng::from_seed([43; 32]),
+            &heap,
+            pk.clone(),
+            &preimage,
+            &ProverContext::new(proof_only_policy),
+        )
+        .await
+        .expect("generated key also proves under request-owned coset spill");
+    vk.verify(&verifier_params, &proof, public_inputs.into_iter())
+        .expect("verify proof with request-owned coset spill");
 
     let mapped = ProverConfig::mapped_key();
     let error = ir

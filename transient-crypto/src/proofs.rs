@@ -1145,8 +1145,11 @@ impl<T: Zkir> ProverKey<T> {
                     return Err(anyhow::anyhow!("known invalid prover key"));
                 }
                 InnerProverKey::GeneratedUnderProcessPolicy(key, keygen_policy)
-                    if !policy.map_prover_key && policy == keygen_policy =>
+                    if !policy.map_prover_key && !keygen_policy.map_prover_key =>
                 {
+                    // Key generation only uses map_prover_key to choose the
+                    // key's coset layout. Spill, floor, directory, and MSM
+                    // settings apply during proving and may vary by request.
                     check_key_cancelled(context, "prover_key.generated")?;
                     return Ok(key.clone());
                 }
