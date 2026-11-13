@@ -114,3 +114,71 @@ tempfile use; RSS includes file-backed pages and does not measure private
 physical footprint. These few samples do not justify enabling mapped keys
 for small circuits or claim a high-`k` result. The earlier two-arm samples
 above retain both keys and should not be used for this policy comparison.
+
+## Local proofs 0.8.3 one-arm memory probe
+
+On macOS 26.2, Mac14,5 (arm64, 96 GiB), Rust 1.98.1, the ignored
+`compact_generated_zkir3_hash_chain_context_only` test ran one proof per
+process with the same Compact ZKIR v3 circuit (`k=15`, 32,185 rows), parameter
+seed, and proof seed. The local stack was proofs `7ecf7190`, ZKIR v3 adapter
+`ead311c`, and Ledger test code `705f5216`, with temporary local Cargo path
+patches for proofs, curves, circuits, stdlib, ZKIR, and the external SHA3
+circuit's Git-sourced proofs dependency. These are **local source** results,
+not a released-package or current-head CI gate. Every run produced a verified
+4,164-byte proof.
+
+Build the focused test binary with `--features zkir3-context --test
+zkir3_mapped_params --no-run`, then pass the resulting executable to
+[`measure_context.py`](measure_context.py). For example, from the Ledger
+workspace:
+
+```sh
+benchmark_target=/path/to/disposable-target
+CARGO_TARGET_DIR="$benchmark_target" cargo test -p midnight-proof-server \
+  --features zkir3-context --test zkir3_mapped_params --no-run
+binary=$(rg --files "$benchmark_target/debug/deps" | \
+  rg '/zkir3_mapped_params-[0-9a-f]+$' | head -1)
+python3 proof-server/tests/compact-v3-hash-chain/measure_context.py "$binary" \
+  --policy heap --no-coset-spill
+python3 proof-server/tests/compact-v3-hash-chain/measure_context.py "$binary" \
+  --policy mapped
+```
+
+`--policy heap|mapped` selects key storage; `--no-coset-spill` independently
+disables forced coset spill. The sampler sets the spill floor to zero for this
+diagnostic, creates private temporary directories, polls `ps` RSS and `lsof`
+open spill-file sizes during the test's marked proof phase, and removes those
+directories when it exits. The default `ProverConfig` floor is `k=18`, so
+coset spill at this circuit's `k=15` was intentionally forced.
+
+One run per policy, **without** `--vmmap`:
+
+The unrounded sampler output, test binary SHA-256, and exact proof lines are in
+[`proofs-083-k15-memory.json`](proofs-083-k15-memory.json).
+
+| Key | Coset spill | Proof seconds | Process peak RSS (MiB) | Largest sampled open spill files (MiB) |
+| --- | --- | ---: | ---: | ---: |
+| Heap | Off | 4.93 | 612 | 0 |
+| Mapped | Off | 9.60 | 638 | 86 |
+| Heap | On | 15.59 | 828 | 276 |
+| Mapped | On | 5.61 | 862 | 358 |
+
+Separate runs with `--vmmap` sampled macOS physical footprint; invoking
+`vmmap` perturbs timing, so their proof seconds are not compared:
+
+| Key | Coset spill | Largest observed physical footprint (MiB) |
+| --- | --- | ---: |
+| Heap | Off | 525 |
+| Mapped | Off | 468 |
+| Heap | On | 529 |
+| Mapped | On | 462 |
+
+RSS includes resident file-backed pages, while physical footprint and open
+spill-file sizes answer different questions. These single samples show a
+smaller observed physical footprint with mapped keys, but no k=15 footprint
+benefit from forcing coset spill. They do not establish throughput or the
+memory crossover at the default `k=18` floor. Setup and keygen precede the
+marked proof phase; the sampler records both phase RSS peaks, but the process
+peak still includes setup. The `lsof` total is file length, not resident bytes
+or a filesystem free-space reading. No default policy should change based on
+this probe alone.

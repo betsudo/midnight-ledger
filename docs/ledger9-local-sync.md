@@ -117,6 +117,16 @@ local proof test compares seeded KZG proof bytes across generated mapped,
 deserialized mapped, and heap keys, and verifies mapped FFLONK keys. The same
 three focused Ledger9 v3 consumer tests pass against this exact commit.
 Keygen and the three extended-domain Lagrange polynomials still allocate on
-the heap. Load/proof RSS, disk measurements, current-head CI, wasm, and
-artifact compatibility remain open. Existing betsudo Ledger issue #30 owns
+the heap. Representative `k>=18` load/proof memory and disk measurements,
+current-head CI, wasm, and artifact compatibility remain open. Existing
+betsudo Ledger issue #30 owns
 the v2 and v3 acceptance gate.
+
+A one-arm `k=15`, 32,185-row Compact-generated ZKIR v3 probe against this
+local 0.8.3 stack observed lower macOS physical footprint with mapped keys
+under both coset policies, while process RSS and open tempfile sizes grew.
+Forcing coset spill below its default `k=18` floor gave no footprint benefit
+in these single samples. The commands, four policy configurations, and
+measurement limits are in the [fixture README](../proof-server/tests/compact-v3-hash-chain/README.md).
+This is not a `k=18` crossover or throughput result; keep the default floor
+until a representative larger-circuit gate establishes it.
