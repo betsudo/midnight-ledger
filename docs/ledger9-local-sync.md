@@ -526,3 +526,16 @@ through the default compatible route. These local-source tests do not measure
 peak memory or demonstrate cancellation of a proof already running when its
 socket closes; that path still depends on the existing request-token
 checkpoints. The candidate package graph and current-head CI remain open.
+
+## Running worker close gate
+
+On `sync/ledger9-084-running-disconnect-gate`, a local HTTP/1 socket test
+submits a controlled running job through the same `CancelOnDrop` guard and
+`WorkerPool` used by `/prove`. With half-closed clients disallowed, the test
+waits until the worker is processing, closes the client socket, observes the
+request token become cancelled and the worker report its cancellation error,
+then completes an independent job. The complete opt-in proof-server library
+suite passed (16 tests). This covers the transport-to-running-worker
+cancellation lifecycle without another large proof. It does not show an
+actual Compact proof interrupted mid-operation; that remains limited by the
+prover's existing cancellation checkpoints and needs a separate runtime gate.

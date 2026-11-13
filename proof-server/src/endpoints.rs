@@ -543,6 +543,12 @@ mod context_tests {
         cancel: CancelToken,
     }
 
+    struct RunningDisconnectState {
+        pool: Arc<WorkerPool>,
+        started: Mutex<Option<tokio::sync::oneshot::Sender<uuid::Uuid>>>,
+        cancel: CancelToken,
+    }
+
     async fn pending_http_proof(state: Data<DisconnectState>) -> HttpResponse {
         let _guard = CancelOnDrop::new(state.cancel.clone());
         state
@@ -555,6 +561,39 @@ mod context_tests {
             .expect("signal handler start");
         std::future::pending::<()>().await;
         HttpResponse::Ok().finish()
+    }
+
+    async fn running_http_proof(
+        state: Data<RunningDisconnectState>,
+    ) -> Result<HttpResponse, Error> {
+        let mut guard = CancelOnDrop::new(state.cancel.clone());
+        let worker_cancel = guard.token.clone();
+        let (id, updates) = state
+            .pool
+            .submit_and_subscribe(move || {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+                while !worker_cancel.is_cancelled() && std::time::Instant::now() < deadline {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                if worker_cancel.is_cancelled() {
+                    Err(WorkError::CancelledUnexpectedly)
+                } else {
+                    Err(WorkError::InternalError("probe deadline expired".into()))
+                }
+            })
+            .await?;
+        guard.track_job(state.pool.clone(), id);
+        state
+            .started
+            .lock()
+            .expect("start signal lock")
+            .take()
+            .expect("one request")
+            .send(id)
+            .expect("signal job submission");
+        let result = wait_for_proof_job(&state.pool, id, &updates, &guard.token).await?;
+        guard.disarm_job();
+        Ok(HttpResponse::Ok().body(result))
     }
 
     #[actix_web::test]
@@ -601,6 +640,78 @@ mod context_tests {
             cancelled.is_ok(),
             "disconnect did not cancel the handler token"
         );
+    }
+
+    #[actix_web::test]
+    async fn client_close_signals_running_worker_without_cancelling_next_job() {
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let pool = Arc::new(WorkerPool::new(1, 2, 5.0));
+        let state = Data::new(RunningDisconnectState {
+            pool: pool.clone(),
+            started: Mutex::new(Some(started_tx)),
+            cancel: CancelToken::new(),
+        });
+        let observed = state.cancel.clone();
+        let server = actix_web::HttpServer::new(move || {
+            actix_web::App::new()
+                .app_data(state.clone())
+                .route("/running-proof", web::get().to(running_http_proof))
+        })
+        .h1_allow_half_closed(false)
+        .bind(("127.0.0.1", 0))
+        .expect("bind local probe");
+        let port = server.addrs()[0].port();
+        let server = server.run();
+        let handle = server.handle();
+        let task = actix_web::rt::spawn(server);
+        let mut client = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .expect("connect local probe");
+        client
+            .write_all(b"GET /running-proof HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .expect("send request");
+        let id = tokio::time::timeout(std::time::Duration::from_secs(2), started_rx)
+            .await
+            .expect("handler start timeout")
+            .expect("handler start signal");
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while pool.requests.processing_count().await != 1 {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("worker did not start");
+        drop(client);
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !observed.is_cancelled() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("disconnect did not signal request token");
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !matches!(
+                pool.poll(id).await,
+                Some(JobStatus::Error(WorkError::CancelledUnexpectedly))
+            ) {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("running worker did not stop at cancellation checkpoint");
+        let (_, updates) = pool
+            .submit_and_subscribe(|| Ok(vec![42]))
+            .await
+            .expect("submit independent job");
+        assert_eq!(
+            JobStatus::wait_for_success(&updates)
+                .await
+                .expect("independent job completed"),
+            vec![42]
+        );
+        handle.stop(false).await;
+        task.await.expect("server task").expect("server result");
     }
 
     #[actix_web::test]
