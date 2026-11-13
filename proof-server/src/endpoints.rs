@@ -481,6 +481,73 @@ pub(crate) async fn prove_transaction(
 #[cfg(all(test, feature = "zkir3-context"))]
 mod context_tests {
     use super::*;
+    use std::sync::Mutex;
+    use tokio::io::AsyncWriteExt;
+
+    struct DisconnectState {
+        started: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+        cancel: CancelToken,
+    }
+
+    async fn pending_http_proof(state: Data<DisconnectState>) -> HttpResponse {
+        let _guard = CancelOnDrop(state.cancel.clone());
+        state
+            .started
+            .lock()
+            .expect("start signal lock")
+            .take()
+            .expect("one request")
+            .send(())
+            .expect("signal handler start");
+        std::future::pending::<()>().await;
+        HttpResponse::Ok().finish()
+    }
+
+    #[actix_web::test]
+    #[ignore = "Actix keeps a pending handler alive after peer disconnect; issue #30 tracks this red gate"]
+    async fn client_disconnect_cancels_pending_handler_guard() {
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let state = Data::new(DisconnectState {
+            started: Mutex::new(Some(started_tx)),
+            cancel: CancelToken::new(),
+        });
+        let observed = state.cancel.clone();
+        let server = actix_web::HttpServer::new(move || {
+            actix_web::App::new()
+                .app_data(state.clone())
+                .route("/pending-proof", web::get().to(pending_http_proof))
+        })
+        .bind(("127.0.0.1", 0))
+        .expect("bind local probe");
+        let port = server.addrs()[0].port();
+        let server = server.run();
+        let handle = server.handle();
+        let task = actix_web::rt::spawn(server);
+        let mut client = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .expect("connect local probe");
+        client
+            .write_all(b"GET /pending-proof HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .expect("send request");
+        tokio::time::timeout(std::time::Duration::from_secs(2), started_rx)
+            .await
+            .expect("handler start timeout")
+            .expect("handler start signal");
+        drop(client);
+        let cancelled = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !observed.is_cancelled() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        handle.stop(false).await;
+        task.await.expect("server task").expect("server result");
+        assert!(
+            cancelled.is_ok(),
+            "disconnect did not cancel the handler token"
+        );
+    }
 
     #[tokio::test]
     async fn dropped_request_cancels_only_its_proof_token() {

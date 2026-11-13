@@ -110,6 +110,24 @@ A later local cache iteration keeps the legacy bytes-only LRU unchanged and adds
 
 The opt-in `/prove` handler now creates a fresh cancellation token for each request while retaining the process memory configuration. A guard signals that token if the handler future is dropped; the blocking proof can observe it at the existing key-build and proving checkpoints. A focused async test aborted one handler and confirmed that its token was cancelled while another request's token stayed live. The opt-in Compact-generated v3 HTTP proof still verified. This establishes request token isolation and handler-drop signalling, but does not establish that Actix drops a handler when its network client disconnects. The worker pool still rejects cancellation of a running job, and a low-level key read cannot be interrupted. The default released-package route retains its prior context and dependency graph.
 
+A real-loopback HTTP probe on the local 0.8.3 candidate, using locked
+`actix-web` 4.19.0 and the opt-in context graph, established the missing
+disconnect signal. After the handler began waiting, the client closed its
+TCP socket. The handler remained pending for two seconds and its
+`CancelOnDrop` token was not cancelled. Returning a pending body stream or
+one that yielded empty chunks also left the token live; a stream that sent
+nonempty body bytes was dropped promptly. Sending such bytes would change
+the binary proof response, so it is not a compatible fix for `/prove`.
+The ignored `client_disconnect_cancels_pending_handler_guard` test preserves
+the red, reproducible gate: the normal `context_tests` filter passed one
+handler-abort test and skipped this probe, while running it with `--ignored`
+failed after two seconds. The local source graph used proofs `de847239`,
+ZKIR `725f5a5`, and this Ledger branch based on `fd291f24`; the committed
+lockfile was restored after testing. This leaves request token isolation
+established for handler abort, but **HTTP disconnect cancellation remains
+unimplemented** under [#30](https://github.com/betsudo/midnight-ledger/issues/30). Do not
+claim that an abandoned client stops a running proof from this guard alone.
+
 The next local key-loader iteration stores serialized key bytes in an `Arc<Vec<u8>>`, removing the full raw-key clone made by legacy `init()` and allowing the explicit-policy loader to release its per-key mutex while it waits for global build admission. Context-aware requests can now cancel while waiting for either mutex. After admission, the loader reacquires the key mutex and checks its state before reading so a concurrent legacy initializer cannot silently change the policy decision. The per-key cancellation test, same-object and cross-object cache reuse test, five non-ignored opt-in v3 tests, opt-in HTTP proof, and locked released-package HTTP proof passed locally. A low-level key read remains non-interruptible, and the one-entry cache still has no disk-byte admission limit. No high-k memory result follows from these small tests.
 
 The next Compact 0.36.1 fixture has 50 chained hashes and ZKIR 3.2.1 model k=17 / 94,324 rows. Two mapped-key plus forced-coset-spill proofs, two heap-key plus forced-spill proofs, and one heap-key/no-spill proof all verified. The mapped-key pairs used 207–326 MiB less sampled proof-phase RSS than heap keys with the same coset policy, but roughly 996 MiB more sampled live spill and about 2.6 seconds more proof time per pair. The heap/no-spill sample had no observed spill and similar or lower RSS than the heap/spill runs. This is below the default coset-spill floor k=18 and does not justify enabling spill at k=17. The fixture README records exact numbers, source hashes, run order, host, and measurement limits; k=18/k=20, private physical memory, and load remain open.
