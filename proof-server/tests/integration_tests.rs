@@ -65,11 +65,19 @@ mod common {
     }
 
     pub fn start_server_with_ingress_limits(config: IngressConfig) -> TestServer {
+        start_server_with_ingress_and_job_limits(DEFAULT_NUM_WORKERS, DEFAULT_JOB_LIMIT, config)
+    }
+
+    pub fn start_server_with_ingress_and_job_limits(
+        num_workers: usize,
+        job_limit: usize,
+        config: IngressConfig,
+    ) -> TestServer {
         init_logger();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             rt::System::new().block_on(async move {
-                let pool = WorkerPool::new(DEFAULT_NUM_WORKERS, DEFAULT_JOB_LIMIT, 600.0);
+                let pool = WorkerPool::new(num_workers, job_limit, 600.0);
                 let (srv, bound_port) = server_with_ingress_config(0, false, pool, config)
                     .expect("Failed to start server");
                 tx.send((srv.handle(), bound_port))
@@ -352,6 +360,7 @@ mod prove_tx_endpoint {
     use super::common::*;
     use super::test_data::*;
     use ledger::structure::{ProofMarker, Signature, Transaction};
+    use midnight_proof_server::IngressConfig;
     use rand::rngs::StdRng;
     use rand::{Rng, SeedableRng};
     use regex::Regex;
@@ -492,7 +501,14 @@ mod prove_tx_endpoint {
 
     #[tokio::test]
     async fn handles_concurrent_requests() {
-        let server = start_server(DEFAULT_NUM_WORKERS, 10);
+        let server = start_server_with_ingress_and_job_limits(
+            DEFAULT_NUM_WORKERS,
+            10,
+            IngressConfig {
+                max_inflight: 10,
+                ..IngressConfig::default()
+            },
+        );
         let body = serialize_prove_tx_body().await;
 
         let tasks: Vec<_> = (0..10)
@@ -553,6 +569,7 @@ mod prove_tx_endpoint {
 mod ready_endpoint {
     use super::common::*;
     use super::test_data::*;
+    use midnight_proof_server::IngressConfig;
     use std::time::Duration;
 
     #[tokio::test]
@@ -629,7 +646,14 @@ mod ready_endpoint {
 
     #[tokio::test]
     async fn zero_capacity_allows_unlimited_jobs() {
-        let server = start_server(DEFAULT_NUM_WORKERS, 0);
+        let server = start_server_with_ingress_and_job_limits(
+            DEFAULT_NUM_WORKERS,
+            0,
+            IngressConfig {
+                max_inflight: 10,
+                ..IngressConfig::default()
+            },
+        );
         let body = serialize_prove_tx_body().await;
 
         let base_url = server.base_url();
