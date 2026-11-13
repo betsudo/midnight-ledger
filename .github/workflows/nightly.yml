@@ -48,10 +48,9 @@ jobs:
         with:
           primary-key: nix-${{ runner.os }}-${{ hashFiles('**/*.nix', '**/flake.lock') }}
           restore-prefixes-first-match: nix-${{ runner.os }}-
-          purge: true
-          purge-prefixes: nix-${{ runner.os }}-
-          purge-primary-key: never
-          purge-created: P7D
+          # The build token is read-only while running workspace code. Cache
+          # deletion requires actions:write, so rely on GitHub cache eviction.
+          purge: false
 
       - name: Configure cargo
         run: .github/scripts/configure-cargo.sh
