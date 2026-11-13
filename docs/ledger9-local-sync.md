@@ -455,3 +455,15 @@ The committed Ledger/ZKIR lockfiles remain on their release graph, so a
 normal `--locked` build cannot qualify this unpublished candidate yet.
 An immutable dependency pin, released-package checks, and current-head CI
 remain required before rollout.
+
+## Policy-invariant Compact v3 verifier key
+
+On `sync/ledger9-084-policy-serialization`, the focused generated-key test
+compares tagged prover-key and verifier-key bytes from heap and mapped
+keygen on the same Compact v3 source, and verifies a proof made with the
+mapped generated key under both verifier keys. The complete non-ignored
+`zkir3_mapped_params` target passed on the distinct local package line
+(8 tests; 4 measurement arms ignored). This proves policy-invariant
+serialization for that fixture and keygen path; it does not make the older
+0.8.2 release keys compatible with the candidate or establish a
+released-package graph.

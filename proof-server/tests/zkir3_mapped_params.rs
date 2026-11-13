@@ -173,7 +173,7 @@ async fn explicit_key_cache_reuses_only_the_same_policy() {
         ir.k() as u32,
         ChaCha20Rng::from_seed([9; 32]),
     )));
-    let (generated, _) = ir
+    let (generated, heap_vk) = ir
         .keygen(&HeapParams(params.clone()))
         .await
         .expect("keygen");
@@ -189,6 +189,14 @@ async fn explicit_key_cache_reuses_only_the_same_policy() {
     let mut mapped_bytes = Vec::new();
     tagged_serialize(&mapped_generated, &mut mapped_bytes).expect("serialize mapped key");
     assert_eq!(mapped_bytes, bytes, "keygen policy must preserve key bytes");
+    let mut heap_vk_bytes = Vec::new();
+    let mut mapped_vk_bytes = Vec::new();
+    tagged_serialize(&heap_vk, &mut heap_vk_bytes).expect("serialize heap verifier key");
+    tagged_serialize(&mapped_vk, &mut mapped_vk_bytes).expect("serialize mapped verifier key");
+    assert_eq!(
+        mapped_vk_bytes, heap_vk_bytes,
+        "keygen policy must preserve verifier-key bytes"
+    );
     assert_eq!(keygen_dir.path().read_dir().unwrap().count(), 0);
     let context = ProverContext::new(keygen_policy.clone());
     let generated_key = mapped_generated
@@ -240,8 +248,11 @@ async fn explicit_key_cache_reuses_only_the_same_policy() {
         .expect("serialize verifier params");
     let verifier_params = ParamsVerifier::read(&params_bytes[..]).expect("verifier params");
     mapped_vk
-        .verify(&verifier_params, &proof, pis.into_iter())
+        .verify(&verifier_params, &proof, pis.iter().copied())
         .expect("verify generated-key proof");
+    heap_vk
+        .verify(&verifier_params, &proof, pis.into_iter())
+        .expect("mapped-key proof verifies under heap-keygen verifier key");
     let mut unavailable = keygen_policy.clone();
     unavailable.spill_dir = Some("/nonexistent-midnight-keygen-dir/for-this-test".into());
     assert!(
