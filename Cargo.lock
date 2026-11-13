@@ -3208,14 +3208,14 @@ dependencies = [
  "rand 0.8.6",
  "rustc-hash",
  "sha2 0.10.9",
- "sha3-circuit 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "sha3-circuit 0.1.0",
  "subtle",
 ]
 
 [[package]]
 name = "midnight-circuits"
 version = "7.3.1"
-source = "git+https://github.com/betsudo/midnight-zk.git?rev=032da948f08efbb9dd27489ae8cfdc0c2268b2ac#032da948f08efbb9dd27489ae8cfdc0c2268b2ac"
+source = "git+https://github.com/betsudo/midnight-zk.git?rev=763bfbc1e38b202153c20063b108f04e10140ad7#763bfbc1e38b202153c20063b108f04e10140ad7"
 dependencies = [
  "base64 0.13.1",
  "ff 0.13.1",
@@ -3285,7 +3285,7 @@ dependencies = [
 [[package]]
 name = "midnight-curves"
 version = "0.3.2"
-source = "git+https://github.com/betsudo/midnight-zk.git?rev=032da948f08efbb9dd27489ae8cfdc0c2268b2ac#032da948f08efbb9dd27489ae8cfdc0c2268b2ac"
+source = "git+https://github.com/betsudo/midnight-zk.git?rev=763bfbc1e38b202153c20063b108f04e10140ad7#763bfbc1e38b202153c20063b108f04e10140ad7"
 dependencies = [
  "bitvec",
  "blst",
@@ -3559,7 +3559,7 @@ dependencies = [
 [[package]]
 name = "midnight-proofs"
 version = "0.8.4"
-source = "git+https://github.com/betsudo/midnight-zk.git?rev=032da948f08efbb9dd27489ae8cfdc0c2268b2ac#032da948f08efbb9dd27489ae8cfdc0c2268b2ac"
+source = "git+https://github.com/betsudo/midnight-zk.git?rev=763bfbc1e38b202153c20063b108f04e10140ad7#763bfbc1e38b202153c20063b108f04e10140ad7"
 dependencies = [
  "blake2b_simd",
  "criterion 0.8.2",
@@ -3836,13 +3836,13 @@ dependencies = [
  "rand 0.8.6",
  "rayon",
  "sha2 0.10.9",
- "sha3-circuit 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "sha3-circuit 0.1.0",
 ]
 
 [[package]]
 name = "midnight-zk-stdlib"
 version = "2.5.0"
-source = "git+https://github.com/betsudo/midnight-zk.git?rev=032da948f08efbb9dd27489ae8cfdc0c2268b2ac#032da948f08efbb9dd27489ae8cfdc0c2268b2ac"
+source = "git+https://github.com/betsudo/midnight-zk.git?rev=763bfbc1e38b202153c20063b108f04e10140ad7#763bfbc1e38b202153c20063b108f04e10140ad7"
 dependencies = [
  "base64 0.13.1",
  "bincode 2.0.1",
@@ -3859,7 +3859,7 @@ dependencies = [
  "rand 0.8.6",
  "rayon",
  "sha2 0.10.9",
- "sha3-circuit 0.1.0 (git+https://github.com/alexandroszacharakis8/sha3-circuit?rev=1a3ef7d)",
+ "sha3-circuit 0.1.1",
 ]
 
 [[package]]
@@ -3909,7 +3909,7 @@ dependencies = [
 [[package]]
 name = "midnight-zkir"
 version = "3.3.0"
-source = "git+https://github.com/betsudo/midnight-zkir.git?rev=2c2732ffd6649f93e3a4e5a65b1a4d7769338db1#2c2732ffd6649f93e3a4e5a65b1a4d7769338db1"
+source = "git+https://github.com/betsudo/midnight-zkir.git?rev=614dadc171e863f1a964ea19bb5df452a4e61034#614dadc171e863f1a964ea19bb5df452a4e61034"
 dependencies = [
  "anyhow",
  "const-hex",
@@ -5602,8 +5602,8 @@ dependencies = [
 
 [[package]]
 name = "sha3-circuit"
-version = "0.1.0"
-source = "git+https://github.com/alexandroszacharakis8/sha3-circuit?rev=1a3ef7d#1a3ef7d2ce603a26081f428fa74b4a631e243f25"
+version = "0.1.1"
+source = "git+https://github.com/betsudo/midnight-zk.git?rev=763bfbc1e38b202153c20063b108f04e10140ad7#763bfbc1e38b202153c20063b108f04e10140ad7"
 dependencies = [
  "blake2b_simd",
  "ff 0.13.1",
