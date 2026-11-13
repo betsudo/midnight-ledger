@@ -324,3 +324,14 @@ by its local `midnight-transient-crypto` 3.2.0: the registry offered 2.4.0
 as its latest matching line at this check. This is a package availability
 gate, not a failing full-k proof; the released Ledger9 branch must be tested
 separately on its 0.8.2 / stdlib 2.4.0 graph.
+
+On the combined local branch, Ledger `sync/ledger9-083-integrated` at
+`7b92acd8`, ZK `de847239`, and ZKIR `0e03d5e` passed the same full-k=14
+v3 HTTP gate with the tracked ceremony SRS
+(`fc253016885ec830e97808c9ec920bb5cab5c21af590380a6cb5eb0538e2b244`)
+and forced coset spill. The `zkir3_mapped_params` suite also passed
+(7 non-ignored tests, 4 measurement arms ignored) on these combined heads.
+This run used temporary local patches for curves, circuits, proofs, stdlib,
+and ZKIR, plus a Git-source patch for `sha3-circuit`'s proofs dependency.
+The committed Ledger manifest and lockfile still select the release graph;
+this local qualification does not establish published-package or CI status.
