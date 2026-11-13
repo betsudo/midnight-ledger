@@ -504,7 +504,7 @@ pub(crate) async fn prove_transaction(
 mod context_tests {
     use super::*;
     use std::sync::Mutex;
-    use tokio::io::AsyncWriteExt;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     struct DisconnectState {
         started: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
@@ -526,8 +526,7 @@ mod context_tests {
     }
 
     #[actix_web::test]
-    #[ignore = "Actix keeps a pending handler alive after peer disconnect; issue #30 tracks this red gate"]
-    async fn client_disconnect_cancels_pending_handler_guard() {
+    async fn client_close_cancels_pending_handler_when_half_closes_disallowed() {
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let state = Data::new(DisconnectState {
             started: Mutex::new(Some(started_tx)),
@@ -539,6 +538,7 @@ mod context_tests {
                 .app_data(state.clone())
                 .route("/pending-proof", web::get().to(pending_http_proof))
         })
+        .h1_allow_half_closed(false)
         .bind(("127.0.0.1", 0))
         .expect("bind local probe");
         let port = server.addrs()[0].port();
@@ -569,6 +569,39 @@ mod context_tests {
             cancelled.is_ok(),
             "disconnect did not cancel the handler token"
         );
+    }
+
+    #[actix_web::test]
+    async fn default_server_allows_client_half_close_after_request() {
+        let (server, port) = crate::server_with_config(
+            0,
+            false,
+            WorkerPool::new(1, 1, 5.0),
+            crate::ServerConfig::default(),
+        )
+        .expect("start default proof server");
+        let handle = server.handle();
+        let task = actix_web::rt::spawn(server);
+        let mut client = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .expect("connect proof server");
+        client
+            .write_all(b"GET /version HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("send version request");
+        client.shutdown().await.expect("half-close request side");
+        let mut response = Vec::new();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            client.read_to_end(&mut response),
+        )
+        .await
+        .expect("response timeout")
+        .expect("read response");
+        handle.stop(false).await;
+        task.await.expect("server task").expect("server result");
+        assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
+        assert!(response.ends_with(env!("CARGO_PKG_VERSION").as_bytes()));
     }
 
     #[actix_web::test]

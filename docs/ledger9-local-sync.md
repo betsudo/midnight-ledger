@@ -479,3 +479,25 @@ focused test covers both transition orders, and the full proof-server library
 suite with `zkir3-context` passed against the local 0.8.4 source graph
 (12 passed, 1 ignored). The ignored test is still the Actix TCP peer-disconnect
 gate; this change does not add peer-disconnect detection.
+
+## Optional HTTP/1 close cancellation
+
+Actix 4.19 keeps an in-flight handler alive after a TCP client closes when
+HTTP/1 half-closures are allowed. The proof server now exposes
+`--abort-half-closed-clients` (or
+`MIDNIGHT_PROOF_SERVER_ABORT_HALF_CLOSED_CLIENTS=true`) for the
+`zkir3-context` build. It calls
+[Actix's `h1_allow_half_closed(false)`](https://docs.rs/actix-web/4.19.0/actix_web/struct.HttpServer.html#method.h1_allow_half_closed),
+so a
+peer write-side close drops the pending handler and signals that request's
+prover token. This also rejects clients that intentionally half-close their
+write side after sending a complete request; the default remains Actix's
+compatible half-close behavior. The flag is rejected when `zkir3-context` is
+absent because that build has no request-owned prover token.
+
+The focused socket test passed with a pending handler and observed its token
+cancel within two seconds after the client closed. A separate test confirms
+the default server still returns `/version` to a client that half-closes after
+its request. These are transport and handler-lifetime gates; a real in-flight
+Compact proof has not yet been cancelled through this opt-in socket path.
+The deadline bound remains the default mitigation for abandoned jobs.
