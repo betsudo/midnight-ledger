@@ -467,3 +467,15 @@ mapped generated key under both verifier keys. The complete non-ignored
 serialization for that fixture and keygen path; it does not make the older
 0.8.2 release keys compatible with the candidate or establish a
 released-package graph.
+
+## Atomic pending-job cancellation
+
+On `sync/ledger9-084-atomic-queue-cancel`, the proof server claims a pending
+job under the same request-map lock used to cancel it. Previously a worker
+could read `Pending`, yield, and then overwrite a cancellation with
+`Processing` before running the job. The new transition ensures exactly one
+of the claim or cancellation wins; cancelled queued work is skipped. A
+focused test covers both transition orders, and the full proof-server library
+suite with `zkir3-context` passed against the local 0.8.4 source graph
+(12 passed, 1 ignored). The ignored test is still the Actix TCP peer-disconnect
+gate; this change does not add peer-disconnect detection.

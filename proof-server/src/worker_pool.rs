@@ -186,6 +186,36 @@ impl Requests {
         Ok(id)
     }
 
+    /// Claim a pending job under the same lock used by cancellation. A worker
+    /// must not start work after a pending request has been cancelled.
+    async fn try_start(&self, id: Uuid) -> bool {
+        let mut reqs = self.reqs.lock().await;
+        let Some(job) = reqs.get_mut(&id) else {
+            return false;
+        };
+        if !matches!(job.status, JobStatus::Pending) {
+            return false;
+        }
+        job.status = JobStatus::Processing;
+        job.update_sender
+            .try_send(JobStatus::Processing)
+            .expect("job update receiver is retained by the job");
+        true
+    }
+
+    async fn cancel_pending(&self, id: Uuid) -> Result<(), WorkerPoolError> {
+        let mut reqs = self.reqs.lock().await;
+        let job = reqs.get_mut(&id).ok_or(WorkerPoolError::JobMissing(id))?;
+        if !matches!(job.status, JobStatus::Pending) {
+            return Err(WorkerPoolError::JobNotPending(id));
+        }
+        job.status = JobStatus::Cancelled;
+        job.update_sender
+            .try_send(JobStatus::Cancelled)
+            .expect("job update receiver is retained by the job");
+        Ok(())
+    }
+
     async fn get(&self, id: Uuid) -> Option<Job> {
         self.reqs.lock().await.get(&id).cloned()
     }
@@ -232,20 +262,11 @@ impl WorkerPool {
 
             let handle = task::spawn(async move {
                 while let Ok(work) = work_receiver.recv().await {
-                    let status = requests.get(work.id).await;
-                    if status.is_none()
-                        || matches!(
-                            status,
-                            Some(Job {
-                                status: JobStatus::Cancelled,
-                                ..
-                            })
-                        )
-                    {
-                        // Ignore work
+                    if !requests.try_start(work.id).await {
+                        // The job was cancelled or expired before this worker
+                        // claimed it.
                         continue;
                     }
-                    requests.set_status(&work.id, JobStatus::Processing).await;
                     let result = task::spawn_blocking(work.work).await;
                     match result {
                         Ok(Ok(res)) => requests.set_status(&work.id, JobStatus::Success(res)).await,
@@ -333,17 +354,7 @@ impl WorkerPool {
     /// Cancels a job with the given ID
     /// Returns the job if it was found and canceled, None otherwise
     pub async fn cancel(&self, id: Uuid) -> Result<(), WorkerPoolError> {
-        match self.requests.get(id).await {
-            Some(job) => {
-                if matches!(job.status, JobStatus::Pending) {
-                    self.requests.set_status(&id, JobStatus::Cancelled).await;
-                    Ok(())
-                } else {
-                    Err(WorkerPoolError::JobNotPending(id))
-                }
-            }
-            _ => Err(WorkerPoolError::JobMissing(id)),
-        }
+        self.requests.cancel_pending(id).await
     }
 
     /// Subscribes to status updates for a specific job
@@ -376,6 +387,30 @@ impl WorkerPool {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[tokio::test]
+    async fn pending_cancellation_and_worker_claim_have_one_winner() {
+        let requests = Requests::new(1, Duration::from_secs(30));
+
+        let cancelled = requests.new_req().await.unwrap();
+        requests.cancel_pending(cancelled).await.unwrap();
+        assert!(!requests.try_start(cancelled).await);
+        assert!(matches!(
+            requests.get(cancelled).await.unwrap().status,
+            JobStatus::Cancelled
+        ));
+
+        let claimed = requests.new_req().await.unwrap();
+        assert!(requests.try_start(claimed).await);
+        assert!(matches!(
+            requests.cancel_pending(claimed).await,
+            Err(WorkerPoolError::JobNotPending(id)) if id == claimed
+        ));
+        assert!(matches!(
+            requests.get(claimed).await.unwrap().status,
+            JobStatus::Processing
+        ));
+    }
 
     #[tokio::test]
     async fn test_worker_pool_basic() {
