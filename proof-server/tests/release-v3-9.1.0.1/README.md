@@ -34,6 +34,7 @@ The generated files have these SHA-256 digests:
 `release_v3_compat.rs` checks that the current fork deserializes and verifies
 the released bytes and can create new proofs using the released key material
 with both heap and mapped-parameter/forced-spill policies. Both new proofs
-verify with the released verifier key and have identical proof bytes. Run with
+verify with the released verifier key and have identical proof bytes. It also
+rejects truncated key/proof bytes and a mismatched public statement. Run with
 `MIDNIGHT_BENCH_REQUIRE_SPILL=1` to turn a failed spill attempt into a test
 failure rather than a heap fallback.
