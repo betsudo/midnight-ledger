@@ -16,6 +16,7 @@ use midnight_proofs::poly::kzg::params::ParamsKZG;
 use midnight_proofs::utils::SerdeFormat;
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
+use serialize::tagged_deserialize;
 use serialize::tagged_serialize;
 use transient_crypto::curve::Fr;
 use transient_crypto::hash::transient_commit;
@@ -61,6 +62,59 @@ impl Resolver for KeyResolver {
             ir_source,
         }))
     }
+}
+
+#[actix_web::test]
+async fn explicit_key_cache_reuses_only_the_same_policy() {
+    let ir = IrSource::load(
+        &br#"{
+            "version": { "major": 3, "minor": 0 },
+            "inputs": [{ "name": "%v_0", "type": "Scalar<BLS12-381>" }],
+            "outputs": [],
+            "do_communications_commitment": false,
+            "instructions": [{ "op": "assert", "cond": "%v_0" }]
+        }"#[..],
+    )
+    .expect("load v3 IR");
+    let params = ParamsProver(Arc::new(ParamsKZG::<Bls12>::unsafe_setup(
+        ir.k() as u32,
+        ChaCha20Rng::from_seed([9; 32]),
+    )));
+    let (generated, _) = ir.keygen(&HeapParams(params)).await.expect("keygen");
+    let mut bytes = Vec::new();
+    tagged_serialize(&generated, &mut bytes).expect("serialize key");
+    generated.warm_pk_cache().expect("warm legacy cache");
+    let legacy_key = generated.init().expect("initialized generated key");
+
+    let deserialize = || -> ProverKey<IrSource> {
+        tagged_deserialize(io::Cursor::new(&bytes)).expect("deserialize lazy key")
+    };
+    let legacy_reloaded = deserialize().init().expect("legacy cache hit");
+    assert!(Arc::ptr_eq(&legacy_key, &legacy_reloaded));
+    let heap = ProverConfig::heap();
+    let first = deserialize().init_with_policy(&heap).expect("heap key");
+    assert!(!Arc::ptr_eq(&first, &legacy_key));
+    let same = deserialize()
+        .init_with_policy(&heap)
+        .expect("cached heap key");
+    assert!(Arc::ptr_eq(&first, &same));
+
+    let spill_dir = tempfile::tempdir().expect("mapped-key directory");
+    let mut mapped = ProverConfig::mapped_key();
+    mapped.spill_dir = Some(spill_dir.path().to_path_buf());
+    let different = deserialize().init_with_policy(&mapped).expect("mapped key");
+    assert!(!Arc::ptr_eq(&first, &different));
+    let same_mapped = deserialize()
+        .init_with_policy(&mapped)
+        .expect("cached mapped key");
+    assert!(Arc::ptr_eq(&different, &same_mapped));
+
+    let other_dir = tempfile::tempdir().expect("second mapped-key directory");
+    mapped.spill_dir = Some(other_dir.path().to_path_buf());
+    let other_dir_key = deserialize()
+        .init_with_policy(&mapped)
+        .expect("different directory key");
+    assert!(!Arc::ptr_eq(&different, &other_dir_key));
 }
 
 #[actix_web::test]
