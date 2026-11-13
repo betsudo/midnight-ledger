@@ -176,3 +176,15 @@ passed without the environment variable to preserve its synthetic default.
 This is a direct proof-server integration test, not an HTTP request or a
 full-k=14 proof. The published Ledger9 dependency graph still uses proofs
 0.8.2; no release pin or remote branch was changed.
+
+The same tracked SRS now also passes the opt-in v3 `/prove` endpoint test
+`prove_endpoint_accepts_v3_with_mapped_params` on the local proofs 0.8.3,
+ZKIR v3, and Ledger9 patch graph. With `MIDNIGHT_LEDGER_TEST_CEREMONY_SRS`
+pointing at the tracked file, the test loaded via `ParamsProver::read`,
+downsized to the Compact counter circuit's k, published a private mapped
+companion, sent an HTTP proof request, and verified its response. It passed
+again without the SRS environment variable, and passed with that variable
+plus `MIDNIGHT_SPILL_COSETS=1`, `MIDNIGHT_SPILL_FLOOR_K=0`, and
+`MIDNIGHT_BENCH_REQUIRE_SPILL=1` to require the streamed coset path. This
+checks one local HTTP proof, not a full-k=14 proof, disconnect cancellation,
+concurrent load, or a released-package build.

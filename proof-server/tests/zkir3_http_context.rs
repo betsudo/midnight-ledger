@@ -2,6 +2,8 @@
 
 //! Exercise both released and opt-in context ZKIR v3 routes through the real
 //! HTTP server with a generated key and an immutable mapped parameter companion.
+//! `MIDNIGHT_LEDGER_TEST_CEREMONY_SRS` selects a tracked Ledger9 SRS file;
+//! the default remains self-contained.
 
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -47,10 +49,21 @@ async fn prove_endpoint_accepts_v3_with_mapped_params() {
             "forced-spill run must select this circuit's k"
         );
     }
-    let params = ParamsProver(Arc::new(ParamsKZG::<Bls12>::unsafe_setup(
-        k as u32,
-        ChaCha20Rng::from_seed([7; 32]),
-    )));
+    let params = if let Some(path) = std::env::var_os("MIDNIGHT_LEDGER_TEST_CEREMONY_SRS") {
+        let file = std::fs::File::open(path).expect("open ceremony SRS");
+        let loaded = ParamsProver::read(file).expect("read ceremony SRS through Ledger9");
+        let mut params = Arc::try_unwrap(loaded.0)
+            .ok()
+            .expect("freshly loaded SRS must have one owner");
+        assert!(params.max_k() >= k as u32);
+        params.downsize(k as u32);
+        ParamsProver(Arc::new(params))
+    } else {
+        ParamsProver(Arc::new(ParamsKZG::<Bls12>::unsafe_setup(
+            k as u32,
+            ChaCha20Rng::from_seed([7; 32]),
+        )))
+    };
     let mut params_bytes = Vec::new();
     params
         .0
