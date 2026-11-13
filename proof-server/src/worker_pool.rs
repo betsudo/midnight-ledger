@@ -16,7 +16,7 @@ use actix_web::error::{
 };
 use async_channel::{Receiver, RecvError, Sender, bounded, unbounded};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, SystemTime};
 use thiserror::Error;
 use tokio::{sync::Mutex, task};
@@ -93,26 +93,31 @@ impl JobStatus {
     }
 }
 
+type Work = Box<dyn FnOnce() -> Result<Vec<u8>, WorkError> + Send + 'static>;
+
 pub struct WorkItem {
     id: Uuid,
-    work: Box<dyn FnOnce() -> Result<Vec<u8>, WorkError> + Send + 'static>,
 }
 
 #[derive(Clone)]
 pub struct Job {
     status: JobStatus,
+    // The channel holds only an ID. Cancelling a queued job takes and drops
+    // its captured request body without waiting for a worker to drain it.
+    work: Arc<StdMutex<Option<Work>>>,
     update_sender: Sender<JobStatus>,
     update_receiver: Arc<Receiver<JobStatus>>,
     timeout: SystemTime,
 }
 
 impl Job {
-    fn new(ttl: Duration) -> Self {
+    fn new(ttl: Duration, work: Work) -> Self {
         let (update_sender, receiver) = unbounded();
         Self {
             update_sender,
             update_receiver: Arc::new(receiver),
             status: JobStatus::Pending,
+            work: Arc::new(StdMutex::new(Some(work))),
             timeout: SystemTime::now() + ttl,
         }
     }
@@ -167,7 +172,10 @@ impl Requests {
         }
     }
 
-    async fn new_req(&self) -> Result<Uuid, WorkerPoolError> {
+    async fn new_req(
+        &self,
+        work: Work,
+    ) -> Result<(Uuid, Arc<Receiver<JobStatus>>), WorkerPoolError> {
         // Capacity admission must be one atomic operation. With the previous
         // `is_full().await` followed by a second lock for `insert`, a burst of
         // HTTP requests could all observe spare capacity and overfill the
@@ -180,27 +188,34 @@ impl Requests {
         if self.capacity != 0 && pending >= self.capacity {
             return Err(WorkerPoolError::JobQueueFull);
         }
-        let req = Job::new(self.job_ttl);
+        let req = Job::new(self.job_ttl, work);
+        let updates = req.updates();
         let id = Uuid::new_v4();
         reqs.insert(id, req);
-        Ok(id)
+        Ok((id, updates))
     }
 
     /// Claim a pending job under the same lock used by cancellation. A worker
     /// must not start work after a pending request has been cancelled.
-    async fn try_start(&self, id: Uuid) -> bool {
+    async fn try_start(&self, id: Uuid) -> Option<Work> {
         let mut reqs = self.reqs.lock().await;
         let Some(job) = reqs.get_mut(&id) else {
-            return false;
+            return None;
         };
         if !matches!(job.status, JobStatus::Pending) {
-            return false;
+            return None;
         }
+        let work = job
+            .work
+            .lock()
+            .expect("job work lock")
+            .take()
+            .expect("pending job retains its work");
         job.status = JobStatus::Processing;
         job.update_sender
             .try_send(JobStatus::Processing)
             .expect("job update receiver is retained by the job");
-        true
+        Some(work)
     }
 
     async fn cancel_pending(&self, id: Uuid) -> Result<(), WorkerPoolError> {
@@ -210,14 +225,21 @@ impl Requests {
             return Err(WorkerPoolError::JobNotPending(id));
         }
         job.status = JobStatus::Cancelled;
+        let work = job.work.lock().expect("job work lock").take();
         job.update_sender
             .try_send(JobStatus::Cancelled)
             .expect("job update receiver is retained by the job");
+        drop(reqs);
+        drop(work);
         Ok(())
     }
 
     async fn get(&self, id: Uuid) -> Option<Job> {
         self.reqs.lock().await.get(&id).cloned()
+    }
+
+    async fn remove(&self, id: Uuid) -> Option<Job> {
+        self.reqs.lock().await.remove(&id)
     }
 
     async fn gc(&self) {
@@ -229,9 +251,14 @@ impl Requests {
                 keys_to_remove.push(*id);
             }
         }
-        for key in keys_to_remove {
-            reqs.remove(&key);
-        }
+        let removed = keys_to_remove
+            .into_iter()
+            .filter_map(|key| reqs.remove(&key))
+            .collect::<Vec<_>>();
+        drop(reqs);
+        // Releasing a captured proof request can be expensive; do it after
+        // unlocking admission and status queries.
+        drop(removed);
     }
 }
 
@@ -262,12 +289,12 @@ impl WorkerPool {
 
             let handle = task::spawn(async move {
                 while let Ok(work) = work_receiver.recv().await {
-                    if !requests.try_start(work.id).await {
+                    let Some(job_work) = requests.try_start(work.id).await else {
                         // The job was cancelled or expired before this worker
                         // claimed it.
                         continue;
-                    }
-                    let result = task::spawn_blocking(work.work).await;
+                    };
+                    let result = task::spawn_blocking(job_work).await;
                     match result {
                         Ok(Ok(res)) => requests.set_status(&work.id, JobStatus::Success(res)).await,
                         Ok(Err(e)) => requests.set_status(&work.id, JobStatus::Error(e)).await,
@@ -309,24 +336,33 @@ impl WorkerPool {
         }
     }
 
+    async fn enqueue(
+        &self,
+        work: Work,
+    ) -> Result<(Uuid, Arc<Receiver<JobStatus>>), WorkerPoolError> {
+        let (id, updates) = self.requests.new_req(work).await?;
+        // The channel is unbounded. Enqueue and return the subscription without
+        // another await on successful admission, so a dropped HTTP handler cannot
+        // leave a job inserted but not yet registered with its cancellation
+        // guard.
+        if self.sender.try_send(WorkItem { id }).is_err() {
+            drop(self.requests.remove(id).await);
+            return Err(WorkerPoolError::ChannelClosed);
+        }
+        Ok((id, updates))
+    }
+
     /// Submits a work item to the pool
     pub async fn submit<F>(&self, work: F) -> Result<Uuid, WorkerPoolError>
     where
         F: FnOnce() -> Result<Vec<u8>, WorkError> + Send + 'static,
     {
-        let id = self.requests.new_req().await?;
-        self.sender
-            .send(WorkItem {
-                id,
-                work: Box::new(work),
-            })
-            .await
-            .map_err(|_| WorkerPoolError::ChannelClosed)?;
+        let (id, _) = self.enqueue(Box::new(work)).await?;
         Ok(id)
     }
 
     /// Submits a work item to the pool and returns both the job ID and a subscription to its status updates
-    /// Returns None if the submission fails
+    /// Returns an error if submission or subscription fails.
     pub async fn submit_and_subscribe<F>(
         &self,
         work: F,
@@ -334,8 +370,7 @@ impl WorkerPool {
     where
         F: FnOnce() -> Result<Vec<u8>, WorkError> + Send + 'static,
     {
-        let id = self.submit(work).await?;
-        Ok((id, self.subscribe(id).await.unwrap()))
+        self.enqueue(Box::new(work)).await
     }
 
     /// Receives the result of a completed work item
@@ -386,22 +421,43 @@ impl WorkerPool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
+
+    struct DropProbe(Arc<AtomicBool>);
+
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
 
     #[tokio::test]
     async fn pending_cancellation_and_worker_claim_have_one_winner() {
         let requests = Requests::new(1, Duration::from_secs(30));
 
-        let cancelled = requests.new_req().await.unwrap();
+        let released = Arc::new(AtomicBool::new(false));
+        let captured = DropProbe(released.clone());
+        let (cancelled, _) = requests
+            .new_req(Box::new(move || {
+                drop(captured);
+                Ok(Vec::new())
+            }))
+            .await
+            .unwrap();
         requests.cancel_pending(cancelled).await.unwrap();
-        assert!(!requests.try_start(cancelled).await);
+        assert!(released.load(Ordering::SeqCst));
+        assert!(requests.try_start(cancelled).await.is_none());
         assert!(matches!(
             requests.get(cancelled).await.unwrap().status,
             JobStatus::Cancelled
         ));
 
-        let claimed = requests.new_req().await.unwrap();
-        assert!(requests.try_start(claimed).await);
+        let (claimed, _) = requests.new_req(Box::new(|| Ok(Vec::new()))).await.unwrap();
+        let work = requests
+            .try_start(claimed)
+            .await
+            .expect("claim pending work");
         assert!(matches!(
             requests.cancel_pending(claimed).await,
             Err(WorkerPoolError::JobNotPending(id)) if id == claimed
@@ -410,6 +466,23 @@ mod tests {
             requests.get(claimed).await.unwrap().status,
             JobStatus::Processing
         ));
+        assert_eq!(work().unwrap(), Vec::<u8>::new());
+    }
+
+    #[tokio::test]
+    async fn failed_submission_releases_captured_work() {
+        let pool = WorkerPool::new(0, 1, 5.0);
+        let released = Arc::new(AtomicBool::new(false));
+        let captured = DropProbe(released.clone());
+        let result = pool
+            .submit(move || {
+                drop(captured);
+                Ok(Vec::new())
+            })
+            .await;
+        assert!(matches!(result, Err(WorkerPoolError::ChannelClosed)));
+        assert!(released.load(Ordering::SeqCst));
+        pool.shutdown().await;
     }
 
     #[tokio::test]
@@ -596,7 +669,7 @@ mod tests {
             let barrier = Arc::clone(&barrier);
             tokio::spawn(async move {
                 barrier.wait().await;
-                requests.new_req().await
+                requests.new_req(Box::new(|| Ok(Vec::new()))).await
             })
         });
         let results = futures::future::join_all(attempts).await;

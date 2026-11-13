@@ -63,16 +63,44 @@ lazy_static! {
     );
 }
 
-/// Keeps a running v3 proof tied to the lifetime of its HTTP handler.
-/// Dropping the handler signals only this request's proof; the blocking worker
-/// observes the token at its next proving or key-build checkpoint.
+/// Ties a v3 proof job to the lifetime of its HTTP handler. Dropping the
+/// handler cancels queued work and signals a running proof's request token;
+/// the worker observes that token at its next proving or key-build checkpoint.
 #[cfg(feature = "zkir3-context")]
-struct CancelOnDrop(CancelToken);
+struct CancelOnDrop {
+    token: CancelToken,
+    queued_job: Option<(Arc<WorkerPool>, uuid::Uuid)>,
+}
+
+#[cfg(feature = "zkir3-context")]
+impl CancelOnDrop {
+    fn new(token: CancelToken) -> Self {
+        Self {
+            token,
+            queued_job: None,
+        }
+    }
+
+    fn track_job(&mut self, pool: Arc<WorkerPool>, id: uuid::Uuid) {
+        self.queued_job = Some((pool, id));
+    }
+
+    fn disarm_job(&mut self) {
+        self.queued_job = None;
+    }
+}
 
 #[cfg(feature = "zkir3-context")]
 impl Drop for CancelOnDrop {
     fn drop(&mut self) {
-        self.0.cancel();
+        self.token.cancel();
+        if let Some((pool, id)) = self.queued_job.take() {
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                handle.spawn(async move {
+                    let _ = pool.cancel(id).await;
+                });
+            }
+        }
     }
 }
 
@@ -360,9 +388,9 @@ pub(crate) async fn prove(
     let data = data.map(Arc::new);
     let data_resolver = data.clone();
     #[cfg(feature = "zkir3-context")]
-    let cancel_on_drop = CancelOnDrop(CancelToken::new());
+    let mut cancel_on_drop = CancelOnDrop::new(CancelToken::new());
     #[cfg(feature = "zkir3-context")]
-    let proof_cancel = cancel_on_drop.0.clone();
+    let proof_cancel = cancel_on_drop.token.clone();
     let (_id, updates) = pool
         .submit_and_subscribe(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
@@ -432,11 +460,15 @@ pub(crate) async fn prove(
             })
         })
         .await?;
+    #[cfg(feature = "zkir3-context")]
+    cancel_on_drop.track_job(pool.get_ref().clone(), _id);
     drop(permit);
     #[cfg(feature = "zkir3-context")]
-    let response = wait_for_proof_job(&pool, _id, &updates, &cancel_on_drop.0).await?;
+    let response = wait_for_proof_job(&pool, _id, &updates, &cancel_on_drop.token).await?;
     #[cfg(not(feature = "zkir3-context"))]
     let response = JobStatus::wait_for_success(&updates).await?;
+    #[cfg(feature = "zkir3-context")]
+    cancel_on_drop.disarm_job();
     #[cfg(feature = "zkir3-context")]
     drop(cancel_on_drop);
 
@@ -512,7 +544,7 @@ mod context_tests {
     }
 
     async fn pending_http_proof(state: Data<DisconnectState>) -> HttpResponse {
-        let _guard = CancelOnDrop(state.cancel.clone());
+        let _guard = CancelOnDrop::new(state.cancel.clone());
         state
             .started
             .lock()
@@ -684,10 +716,10 @@ mod context_tests {
 
     #[tokio::test]
     async fn dropped_request_cancels_only_its_proof_token() {
-        let abandoned = CancelOnDrop(CancelToken::new());
-        let abandoned_proof = abandoned.0.clone();
-        let live = CancelOnDrop(CancelToken::new());
-        let live_proof = live.0.clone();
+        let abandoned = CancelOnDrop::new(CancelToken::new());
+        let abandoned_proof = abandoned.token.clone();
+        let live = CancelOnDrop::new(CancelToken::new());
+        let live_proof = live.token.clone();
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let handler = tokio::spawn(async move {
             let _guard = abandoned;

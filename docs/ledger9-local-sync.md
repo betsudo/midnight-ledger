@@ -501,3 +501,28 @@ the default server still returns `/version` to a client that half-closes after
 its request. These are transport and handler-lifetime gates; a real in-flight
 Compact proof has not yet been cancelled through this opt-in socket path.
 The deadline bound remains the default mitigation for abandoned jobs.
+
+## Release cancelled queued proof bodies
+
+On `sync/ledger9-084-queued-cancel-release`, the worker channel carries only
+job IDs. The request map owns the queued closure, including its captured
+proving material, until a worker atomically claims it. Cancelling a pending
+job now drops that closure immediately; expiry and failed submission also
+release it without retaining a large body in the channel. The handler's
+request guard cancels its queued job on drop as well as signalling the
+running prover token. This closes the path where repeated disconnects or
+deadlines could leave captured proof bodies behind a blocked worker while
+pending-capacity accounting had already freed their slots.
+Successful queue insertion returns the subscription without another await,
+letting the handler attach its cancellation guard before it yields again.
+
+The focused unit test observed captured work drop on cancellation and failed
+submission; the complete `zkir3-context` proof-server library suite passed
+(15 tests). The real `/prove` Compact v3 HTTP fixture queued a valid request
+behind a held worker, closed its socket with the opt-in HTTP/1 policy,
+observed the pending count return to zero before releasing the worker, and
+then verified one normal proof with forced spill. The same fixture passed
+through the default compatible route. These local-source tests do not measure
+peak memory or demonstrate cancellation of a proof already running when its
+socket closes; that path still depends on the existing request-token
+checkpoints. The candidate package graph and current-head CI remain open.

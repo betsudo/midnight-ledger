@@ -12,13 +12,17 @@ use std::time::Duration;
 use base_crypto::data_provider::MidnightDataProvider;
 use ledger::structure::{ProofPreimageVersioned, ProofVersioned};
 use midnight_curves::Bls12;
-use midnight_proof_server::{server, worker_pool::WorkerPool};
+use midnight_proof_server::{ServerConfig, server_with_config, worker_pool::WorkerPool};
 use midnight_proofs::config::ProverConfig;
 use midnight_proofs::poly::kzg::params::ParamsKZG;
 use midnight_proofs::utils::SerdeFormat;
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use serialize::{tagged_deserialize, tagged_serialize};
+#[cfg(feature = "zkir3-context")]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(feature = "zkir3-context")]
+use tokio::io::AsyncWriteExt;
 use transient_crypto::curve::Fr;
 use transient_crypto::hash::transient_commit;
 use transient_crypto::proofs::{
@@ -132,9 +136,78 @@ async fn prove_endpoint_accepts_v3_with_mapped_params() {
     )
     .expect("serialize prove request");
 
-    let (server, port) = server(0, false, WorkerPool::new(1, 2, 120.0)).expect("start server");
+    let pool = WorkerPool::new(1, 2, 120.0);
+    #[cfg(feature = "zkir3-context")]
+    let requests = pool.requests.clone();
+    #[cfg(feature = "zkir3-context")]
+    let release_blocker = {
+        let release = Arc::new(AtomicBool::new(false));
+        let worker_release = release.clone();
+        pool.submit(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while !worker_release.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Ok(Vec::new())
+        })
+        .await
+        .expect("occupy proof worker");
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while requests.processing_count().await != 1 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("worker did not start blocker");
+        release
+    };
+    let (server, port) = server_with_config(
+        0,
+        false,
+        pool,
+        ServerConfig {
+            allow_half_closed_clients: !cfg!(feature = "zkir3-context"),
+            ..ServerConfig::default()
+        },
+    )
+    .expect("start server");
     let handle = server.handle();
     let server_task = actix_web::rt::spawn(server);
+    #[cfg(feature = "zkir3-context")]
+    {
+        let mut client = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .expect("connect queued proof client");
+        let headers = format!(
+            "POST /prove HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        client
+            .write_all(headers.as_bytes())
+            .await
+            .expect("send queued proof headers");
+        client
+            .write_all(&body)
+            .await
+            .expect("send queued proof body");
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while requests.pending_count().await != 1 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("proof was not queued");
+        drop(client);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while requests.pending_count().await != 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("closed client did not cancel queued proof");
+        assert_eq!(requests.processing_count().await, 1);
+        release_blocker.store(true, Ordering::SeqCst);
+    }
     let response = reqwest::Client::builder()
         .timeout(Duration::from_secs(60))
         .build()
