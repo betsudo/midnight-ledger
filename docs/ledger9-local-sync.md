@@ -89,11 +89,23 @@ test passed with forced coset spill. These gates establish v2 source and proof
 compatibility with the local 0.8.3 stack, not cross-version artifact
 compatibility or a memory win.
 
-The broader `zkir3_mapped_params` test target still fails to compile on this
-stack: its mapped proving-key policy constructors are absent from the 0.8.3
-`ProverConfig`. The 0.8.3 branch currently selects heap or spilled cosets and
-can map the trusted SRS, but it has not ported the 0.8.2 mapped proving-key
-storage policy. Do not replace that test with a heap-only assertion or repin
-the released Ledger9 consumer. Existing betsudo Ledger issue #30 owns the v2
-and v3 acceptance gate; its current-head CI, wasm, and artifact compatibility
-requirements remain open.
+The subsequent local ZK branch `sync/proofs-083-quotient-rng` at
+`e86149654704a52478e4259ba301d1f252f8c10a` adds mapped proving-key
+storage for phase-0, fixed, and permutation Lagrange columns. It also routes
+quotient-limb blinding through the caller's cryptographic RNG. Before that
+fix, two valid v3 proofs differed despite identical seeded caller RNGs because
+the quotient limbs drew from `OsRng` directly. With the fix, the
+`zkir3_mapped_params` heap and mapped-parameter/forced-spill proofs verify
+and are byte-identical. The policy-cache and Compact-generated v3 counter
+tests also pass on `sync/ledger9-proofs-083-mapped-consumer` with this local
+ZK branch and the ZKIR adapter.
+
+These consumer checks used temporary local path patches for proofs, curves,
+circuits, stdlib, and ZKIR, plus a Git-source patch for the external SHA3
+circuit's proofs dependency. The registry curves package lacks APIs required
+by this local 0.8.3 proofs branch, so the result does not establish a released
+dependency build. The released Ledger9 consumer stays pinned to proofs 0.8.2.
+The 0.8.3 mapped-key load still builds the full key in memory before mapping
+it, and load/proof RSS, disk measurements, current-head CI, wasm, and artifact
+compatibility remain open. Existing betsudo Ledger issue #30 owns the v2 and
+v3 acceptance gate.
