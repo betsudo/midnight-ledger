@@ -269,3 +269,14 @@ using temporary Cargo patches to the three local source worktrees. The
 C target for `blst`; Homebrew LLVM 20.1.6 supplied it. This is a compile
 check, not a browser runtime or published-package test. The temporary lock,
 patches, worktrees, and 653 MiB target were removed afterward.
+
+A focused Ledger9-only v2/v3 comparison now uses two hand-constructed IRs
+with the same 16,384 scalar assertions, k=15, and 16,386 model rows. Both
+current v2 and external v3 paths verified a 2,548-byte proof under heap and
+forced mapped-key/coset-spill process policies on the same Apple M2 Max host.
+The mapped arms observed 52,428,800 bytes of live keygen files and up to
+232,783,872 bytes of sampled live proof files. The six raw runs, RSS and
+latency values, exact commands, and caveats are in
+`proof-server/tests/v2-v3-assert/README.md`. The SRS stays heap-backed in
+this comparison; the separate Compact v3 fixture exercises mapped SRS.
+This is a matched small circuit baseline, not a production or mobile claim.

@@ -1,0 +1,30 @@
+{
+  "host": "macOS-26.2-arm64-arm-64bit-Mach-O",
+  "version": "v3",
+  "policy": "mapped-spill",
+  "assertions": 16384,
+  "k": 15,
+  "rows": 16386,
+  "exit_code": 0,
+  "wall_seconds": 8.664,
+  "rusage_children_peak_rss_bytes": 758087680,
+  "sampled_peak_rss_kib_by_phase": {
+    "setup": 347152,
+    "keygen": 535296,
+    "prove": 740320
+  },
+  "rss_samples_by_phase": {
+    "setup": 213,
+    "keygen": 17,
+    "prove": 11
+  },
+  "sampled_peak_live_spill_bytes_by_phase": {
+    "keygen": 52428800,
+    "prove": 232783872
+  },
+  "spill_samples_by_phase": {
+    "keygen": 13,
+    "prove": 8
+  },
+  "test_output": "\nrunning 1 test\nversion=v3 k=15 rows=16386 keygen_seconds=1.384 prove_seconds=0.992 proof_bytes=2548\ntest compare_assert_policy ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 8.60s\n\n"
+}
