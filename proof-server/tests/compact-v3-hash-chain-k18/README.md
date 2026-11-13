@@ -122,6 +122,7 @@ Apple M2 Max host above (macOS 26.2, Cargo test profile). Both arms used
 synthetic seeded parameters and the **same mapped-key plus coset-spill proof
 policy**, and both proofs verified at 4,164 bytes. The sampler now marks
 keygen separately after SRS setup and observes its configured spill directory.
+The mapped-keygen sampler arm fails if it does not observe live keygen spill.
 
 ```sh
 python3 proof-server/tests/compact-v3-hash-chain/measure_context.py <test-binary> \

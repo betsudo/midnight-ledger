@@ -177,6 +177,7 @@ def main() -> int:
             and "test result: ok" in output
             and samples.get("prove", 0) > 0
             and (not args.keygen_mapped or samples.get("keygen", 0) > 0)
+            and (not args.keygen_mapped or peak_keygen_spill_bytes > 0)
             else 1
         )
 
