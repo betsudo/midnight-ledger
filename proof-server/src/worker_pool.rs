@@ -215,6 +215,10 @@ pub struct WorkerPool {
 }
 
 impl WorkerPool {
+    pub fn job_timeout(&self) -> Duration {
+        self.requests.job_ttl
+    }
+
     /// Creates a new worker pool with the specified number of workers and channel capacity
     pub fn new(num_workers: usize, job_capacity: usize, job_timeout_secs: f64) -> Self {
         let (work_sender, work_receiver) = unbounded::<WorkItem>();

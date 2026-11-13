@@ -31,9 +31,9 @@ use ledger::structure::{
     INITIAL_TRANSACTION_COST_MODEL, ProofPreimageMarker, ProofPreimageVersioned, ProofVersioned,
     Signature, Transaction,
 };
-use midnight_proofs::config::ProverContext;
 #[cfg(feature = "zkir3-context")]
-use midnight_proofs::config::{CancelToken, ProverConfig};
+use midnight_proofs::config::CancelToken;
+use midnight_proofs::config::{ProverConfig, ProverContext};
 use rand::rngs::OsRng;
 use serialize::{tagged_deserialize, tagged_serialize};
 use std::borrow::Cow;
@@ -73,6 +73,25 @@ struct CancelOnDrop(CancelToken);
 impl Drop for CancelOnDrop {
     fn drop(&mut self) {
         self.0.cancel();
+    }
+}
+
+#[cfg(feature = "zkir3-context")]
+async fn wait_for_proof_job(
+    pool: &WorkerPool,
+    id: uuid::Uuid,
+    updates: &async_channel::Receiver<JobStatus>,
+    cancel: &CancelToken,
+) -> Result<Vec<u8>, Error> {
+    match tokio::time::timeout(pool.job_timeout(), JobStatus::wait_for_success(updates)).await {
+        Ok(result) => result.map_err(Into::into),
+        Err(_) => {
+            cancel.cancel();
+            // A queued job can be skipped entirely. A running job observes its
+            // request token at the next prover checkpoint.
+            let _ = pool.cancel(id).await;
+            Err(ErrorRequestTimeout("proof job timed out"))
+        }
     }
 }
 
@@ -394,7 +413,7 @@ pub(crate) async fn prove(
                         let context = ProverContext::new(ProverConfig::process().clone())
                             .with_cancel(proof_cancel);
                         #[cfg(not(feature = "zkir3-context"))]
-                        let context = ProverContext::process();
+                        let context = ProverContext::new(ProverConfig::process().clone());
                         let proof =
                             versioned_ir::prove(ppi, &proving_data.ir_source, &resolver, &context)
                                 .await?
@@ -414,6 +433,9 @@ pub(crate) async fn prove(
         })
         .await?;
     drop(permit);
+    #[cfg(feature = "zkir3-context")]
+    let response = wait_for_proof_job(&pool, _id, &updates, &cancel_on_drop.0).await?;
+    #[cfg(not(feature = "zkir3-context"))]
     let response = JobStatus::wait_for_success(&updates).await?;
     #[cfg(feature = "zkir3-context")]
     drop(cancel_on_drop);
@@ -547,6 +569,84 @@ mod context_tests {
             cancelled.is_ok(),
             "disconnect did not cancel the handler token"
         );
+    }
+
+    #[actix_web::test]
+    async fn proof_job_deadline_cancels_only_the_expired_request() {
+        let pool = WorkerPool::new(1, 2, 0.1);
+        let expired = CancelToken::new();
+        let worker_token = expired.clone();
+        let (id, updates) = pool
+            .submit_and_subscribe(move || {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+                while !worker_token.is_cancelled() && std::time::Instant::now() < deadline {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Err(WorkError::CancelledUnexpectedly)
+            })
+            .await
+            .expect("submit expiring proof");
+        let error = wait_for_proof_job(&pool, id, &updates, &expired)
+            .await
+            .expect_err("proof must reach its deadline");
+        assert_eq!(
+            error.as_response_error().status_code(),
+            StatusCode::REQUEST_TIMEOUT
+        );
+        assert!(expired.is_cancelled());
+
+        let live = CancelToken::new();
+        let (id, updates) = pool
+            .submit_and_subscribe(|| Ok(vec![42]))
+            .await
+            .expect("submit independent proof");
+        assert_eq!(
+            wait_for_proof_job(&pool, id, &updates, &live)
+                .await
+                .expect("independent proof completes"),
+            vec![42]
+        );
+        assert!(!live.is_cancelled());
+        pool.shutdown().await;
+    }
+
+    #[actix_web::test]
+    async fn proof_job_deadline_skips_queued_work() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let pool = WorkerPool::new(1, 2, 0.05);
+        let release = Arc::new(AtomicBool::new(false));
+        let worker_release = release.clone();
+        pool.submit(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while !worker_release.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            Ok(Vec::new())
+        })
+        .await
+        .expect("occupy worker");
+        let token = CancelToken::new();
+        let ran = Arc::new(AtomicBool::new(false));
+        let worker_ran = ran.clone();
+        let (id, updates) = pool
+            .submit_and_subscribe(move || {
+                worker_ran.store(true, Ordering::SeqCst);
+                Ok(Vec::new())
+            })
+            .await
+            .expect("submit queued proof");
+        let result = wait_for_proof_job(&pool, id, &updates, &token).await;
+        release.store(true, Ordering::SeqCst);
+        let error = result.expect_err("queued proof must reach its deadline");
+        assert_eq!(
+            error.as_response_error().status_code(),
+            StatusCode::REQUEST_TIMEOUT
+        );
+        assert!(token.is_cancelled());
+        assert!(matches!(updates.recv().await, Ok(JobStatus::Cancelled)));
+        pool.shutdown().await;
+        assert!(!ran.load(Ordering::SeqCst));
     }
 
     #[tokio::test]

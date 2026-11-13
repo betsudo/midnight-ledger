@@ -394,3 +394,31 @@ passed on the ZK head. The Ledger HTTP run used the normal reservation
 path, so it establishes integration after the fix, not a full-filesystem
 fallback or delayed-ENOSPC simulation. The candidate still depends on
 unpublished local package sources and has no current-head CI.
+
+## Request deadline on the local ZKIR v3 proof server
+
+On `sync/ledger9-083-disconnect-lifecycle`, the configured proof-server job
+timeout now bounds the `/prove` wait when `zkir3-context` is enabled. At the
+deadline, the handler signals its request-owned prover cancellation token,
+attempts to cancel a still-queued job, and returns HTTP 408. A running proof
+stops at its next cancellation checkpoint. The focused tests cover both a
+running proof and queued work; an independent job completes without receiving
+the expired request's signal. The proof-server library suite passed with
+11 tests and the existing disconnect probe ignored. The default-feature
+server also compiled after replacing its removed `ProverContext::process()`
+call with `ProverContext::new(ProverConfig::process().clone())`. The full-k=14
+Compact v3 HTTP proof with forced spill passed on the same source stack.
+All checks used temporary local patches for the unpublished candidate graph;
+the committed release lockfile was restored afterward.
+
+This deadline is a bound after job submission, not immediate peer-disconnect
+detection. Actix 4.19.0 keeps the pending handler alive after the TCP client
+closes, so the ignored red disconnect probe remains unresolved. The server
+still cannot promise immediate cancellation on client disconnect.
+
+On 2026-11-13, crates.io listed `midnight-proofs` 0.8.3, but that published
+crate lacked the candidate's `mmap` and `disk-spill` features. The candidate
+also requires unpublished stdlib 2.5.0, transient-crypto 3.2.0, and external
+ZKIR 3.3.0. Its 0.8.3 proof source therefore needs a distinct package
+version and a coherent release graph before it can replace the released
+Ledger9 dependency; this branch is a local qualification only.
