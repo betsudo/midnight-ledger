@@ -65,3 +65,40 @@ host, not a throughput, private physical footprint, disk-capacity, or k=20
 qualification. RSS counts mapped pages, and `lsof` sampling can miss
 short-lived files. The script imposes a 20-minute ceiling per process and
 removes each private temporary directory on exit.
+
+## Exploratory local proofs 0.8.3 stack
+
+On 2026-11-13, the same fixture passed its k=18 / 147,048-row cost-model
+test and two explicit-context proof arms against local proofs `8c2459bd`,
+ZKIR v3 `9976f4c`, and Ledger `5df112d6`. Cargo resolved those source
+heads through temporary path patches; this is not the released Ledger9
+dependency graph. The host was the same Apple M2 Max with 96 GiB RAM,
+macOS 26.2, and rustc 1.98.1. Both arms used synthetic seeded parameters,
+the mapped parameter companion, coset spill with floor k=0, and the
+`measure_context.py --vmmap` sampler. Both proofs verified at 4,164 bytes.
+After building `zkir3_mapped_params` with `zkir3-context` and the local path
+patches described in `docs/ledger9-local-sync.md`, run one policy per process:
+
+```sh
+python3 proof-server/tests/compact-v3-hash-chain/measure_context.py <test-binary> \
+  --policy heap --vmmap --test-name compact_generated_zkir3_hash_chain_k18_context_only
+python3 proof-server/tests/compact-v3-hash-chain/measure_context.py <test-binary> \
+  --policy mapped --vmmap --test-name compact_generated_zkir3_hash_chain_k18_context_only
+```
+
+| Key / cosets | Proof seconds | Sampled proof peak RSS (KiB) | Whole-process peak RSS (bytes) | Reported peak physical footprint (bytes) | Peak sampled live spill (bytes) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| heap / spill | 136.36 | 4,922,128 | 5,040,259,072 | 3,543,348,019 | 2,315,255,808 |
+| mapped / spill | 102.39 | 4,813,584 | 4,933,189,632 | 3,328,599,654 | 3,036,676,096 |
+
+The raw sampler results are in `proofs-083-heap-spill.json` and
+`proofs-083-mapped-spill.json`. In this pair, mapped keys reduced sampled
+proof RSS by 106 MiB and reported peak physical footprint by about 205 MiB,
+while increasing sampled live spill by 688 MiB. These file lengths are not
+resident pages. The reported physical-footprint peak comes from repeated
+`vmmap -summary` calls; that sampling perturbs proof timing, and one run per
+arm cannot establish a latency difference. The test includes synthetic SRS
+generation and keygen before its marked proof phase; whole-process peaks
+cannot be attributed solely to proof execution. This pair does not compare
+heap/no-spill on 0.8.3, qualify production SRS or load, or justify a default
+coset-spill policy change.

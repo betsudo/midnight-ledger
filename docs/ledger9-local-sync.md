@@ -146,3 +146,15 @@ not establish released-package alignment, browser runtime behavior,
 production SRS compatibility, or current-head CI. Upstream ZK `main`
 `20b10959`, Ledger `ledger-9` `0978af43`, and ZKIR `zkir-v3` `f7b433d`
 were unchanged at this check.
+
+The same local 0.8.3 source stack also passed the Compact-generated ZKIR v3
+k=18 / 147,048-row cost-model gate and two separate verified proof arms on
+2026-11-13. With coset spill selected in both arms, mapped-key proving used
+106 MiB less sampled proof RSS and about 205 MiB less reported peak macOS
+physical footprint than heap-key proving, at the cost of 688 MiB more sampled
+live spill files. The [k=18 fixture README](../proof-server/tests/compact-v3-hash-chain-k18/README.md)
+has exact numbers and raw JSON. Each arm ran once with `vmmap` sampling, so
+the timing difference is inconclusive. This is synthetic SRS, one circuit,
+and no heap/no-spill 0.8.3 arm; the default coset-spill floor remains k=18.
+Production SRS, load, disk capacity, and release-package alignment remain
+open.
