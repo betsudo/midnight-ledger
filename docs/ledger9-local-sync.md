@@ -253,3 +253,13 @@ policy constant. On the single Apple M2 Max pair, sampled keygen RSS was
 bytes, and keygen took 14.03 versus 23.16 seconds. Raw samples and caveats
 are in `proof-server/tests/compact-v3-hash-chain-k18/README.md`. This is a
 local source and synthetic-SRS result, not a published-package or CI gate.
+
+The same heads also passed a focused external ZKIR/Wasm browser-target compile:
+`CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang cargo check
+--offline --locked --target wasm32-unknown-unknown -p midnight-zkir-wasm`,
+using temporary Cargo patches to the three local source worktrees. The
+`midnight-zkir-wasm` tree resolved one proofs 0.8.3 and no target dependency on
+`memmap2` or proofs `mmap`/`disk-spill` features. Apple clang lacked a Wasm
+C target for `blst`; Homebrew LLVM 20.1.6 supplied it. This is a compile
+check, not a browser runtime or published-package test. The temporary lock,
+patches, worktrees, and 653 MiB target were removed afterward.
