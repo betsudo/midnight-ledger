@@ -422,3 +422,36 @@ also requires unpublished stdlib 2.5.0, transient-crypto 3.2.0, and external
 ZKIR 3.3.0. Its 0.8.3 proof source therefore needs a distinct package
 version and a coherent release graph before it can replace the released
 Ledger9 dependency; this branch is a local qualification only.
+
+## Distinct local optimized package line
+
+The local candidate moves the current-source crates that collided with
+published versions to curves 0.3.2, circuits 7.3.1, and proofs 0.8.4.
+The ZK source is `sync/proofs-084-local-package-line` at `ef4cc33e`; the
+external ZKIR v3 adapter is `sync/zkir-084-local-package-line` at `feba824`.
+Stdlib 2.5.0, this Ledger's transient-crypto 3.2.0, and external ZKIR
+3.3.0 retain their unpublished candidate versions. The released Ledger9
+0.8.2 branch and its immutable proof pin are unchanged.
+
+This branch removes the stale 0.8.2 proof patch and requires explicit local
+Cargo path patches for the ZK crates and external ZKIR until an immutable
+betsudo source can be pinned. Without those patches, `cargo tree --offline`
+fails to select the required circuits `^7.3.1`; it cannot silently use the
+published 7.3.0 or proofs 0.8.3. With the patches, the proof-server tree
+resolves one local proofs 0.8.4 for current v2/v3, curves 0.3.2, circuits
+7.3.1, stdlib 2.5.0, transient-crypto 3.2.0, and external ZKIR 3.3.0.
+The registry proofs 0.7.3 remains only for the legacy V0/V1 stack.
+
+`cargo check --offline --locked -p midnight-proofs --features disk-spill`
+and the stdlib check passed in the ZK workspace. The full-k=14 Compact v3
+HTTP proof passed with the tracked ceremony SRS (SHA-256
+`fc253016885ec830e97808c9ec920bb5cab5c21af590380a6cb5eb0538e2b244`)
+and forced spill. The external ZKIR Wasm crate compiled with the same source
+versions; its target dependency tree resolved one proofs 0.8.4 and no
+`memmap2`, `mmap`, or `disk-spill` activation. These are local-source gates.
+The non-ignored `zkir3_mapped_params` suite passed (8 tests; 4 measurement
+arms ignored), and the proof server compiled with its default features.
+The committed Ledger/ZKIR lockfiles remain on their release graph, so a
+normal `--locked` build cannot qualify this unpublished candidate yet.
+An immutable dependency pin, released-package checks, and current-head CI
+remain required before rollout.

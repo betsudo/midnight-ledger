@@ -14,7 +14,7 @@ ledger = { path = "../ledger", package = "midnight-ledger-v9", default-features 
 zswap = { path = "../zswap", package = "midnight-zswap" }
 base-crypto = { path = "../base-crypto", package = "midnight-base-crypto" }
 transient-crypto = { path = "../transient-crypto", package = "midnight-transient-crypto" }
-midnight-proofs = { version = "^0.8.2", default-features = false }
+midnight-proofs = { version = "^0.8.4", default-features = false }
 storage = { path = "../storage", package = "midnight-storage" }
 serialize = { path = "../serialize", package = "midnight-serialize" }
 
@@ -56,7 +56,7 @@ reqwest = { version = "^0.13.4", default-features = false, features = ["json", "
 serde_json = "1.0.140"
 
 [target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
-midnight-curves = "0.3.1"
-midnight-proofs = { version = "^0.8.2", features = ["bench-internal"] }
+midnight-curves = "0.3.2"
+midnight-proofs = { version = "^0.8.4", features = ["bench-internal"] }
 rand_chacha = "0.3.1"
 tempfile = "3.20"

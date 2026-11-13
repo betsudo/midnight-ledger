@@ -28,11 +28,11 @@ storage-core = { version = "1.2.3", path = "../storage-core", package = "midnigh
 
 ff = "^0.13.1"
 group = "^0.13.0"
-midnight-curves = { version = "^0.3.1" }
+midnight-curves = { version = "^0.3.2" }
 # Features are requested per target below, because disk spill requires mmap
 # and neither feature is available to wasm consumers.
-midnight-proofs = { version = "^0.8.3" }
-midnight-circuits = { version = "^7.3.0" }
+midnight-proofs = { version = "^0.8.4" }
+midnight-circuits = { version = "^7.3.1" }
 midnight-zk-stdlib = { version = "^2.5.0" }
 anyhow = { version = "^1.0.102" }
 lru = "0.18.0"
@@ -74,7 +74,7 @@ futures = { version = "^0.3.31" }
 # midnight-proofs with neither the code nor the `memmap2`/`tempfile`
 # dependencies in its bundle.
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-midnight-proofs = { version = "^0.8.3", features = ["disk-spill"] }
+midnight-proofs = { version = "^0.8.4", features = ["disk-spill"] }
 # `read_mmap_path` opens the companion SRS file via `memmap2` and hands
 # the `Arc<Mmap>` to the patched midnight-proofs' `read_mmap_arc`. The
 # companion lives in the app cache dir and the mapping is read-only.
