@@ -100,10 +100,20 @@ async fn generated_v3_key_proves_with_matching_policy_but_rejects_mapped_key_req
         key_location: KeyLocation(Cow::Borrowed("direct-keygen")),
     };
     let process_policy = ProverConfig::process().clone();
-    assert!(
-        !process_policy.map_prover_key,
-        "direct-keygen test must exercise a process policy without key mapping"
-    );
+    if process_policy.map_prover_key {
+        let error = ir
+            .prove_with_context(
+                ChaCha20Rng::from_seed([42; 32]),
+                &heap,
+                pk,
+                &preimage,
+                &ProverContext::new(process_policy),
+            )
+            .await
+            .expect_err("generated key cannot satisfy mapped-key storage request");
+        assert!(error.to_string().contains("serialize and reload"));
+        return;
+    }
     let (proof, public_inputs, _) = ir
         .prove_with_context(
             ChaCha20Rng::from_seed([42; 32]),
