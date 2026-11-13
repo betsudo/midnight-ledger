@@ -65,6 +65,71 @@ impl Resolver for KeyResolver {
 }
 
 #[actix_web::test]
+async fn generated_v3_key_proves_with_matching_policy_but_rejects_mapped_key_request() {
+    let ir = IrSource::load(
+        &br#"{
+            "version": { "major": 3, "minor": 0 },
+            "inputs": [{ "name": "%v_0", "type": "Scalar<BLS12-381>" }],
+            "outputs": [],
+            "do_communications_commitment": false,
+            "instructions": [{ "op": "assert", "cond": "%v_0" }]
+        }"#[..],
+    )
+    .expect("load v3 IR");
+    let params = ParamsProver(Arc::new(ParamsKZG::<Bls12>::unsafe_setup(
+        ir.k() as u32,
+        ChaCha20Rng::from_seed([13; 32]),
+    )));
+    let mut params_bytes = Vec::new();
+    params
+        .0
+        .write_custom(&mut params_bytes, SerdeFormat::RawBytesUnchecked)
+        .expect("serialize params");
+    let verifier_params = ParamsVerifier::read(&params_bytes[..]).expect("verifier params");
+    let heap = HeapParams(params);
+    let (pk, vk) = ir.keygen(&heap).await.expect("v3 keygen");
+    let preimage = ProofPreimage {
+        binding_input: 42.into(),
+        communications_commitment: None,
+        inputs: vec![1.into()],
+        private_transcript: vec![],
+        public_transcript_inputs: vec![],
+        public_transcript_outputs: vec![],
+        key_location: KeyLocation(Cow::Borrowed("direct-keygen")),
+    };
+    let process_policy = ProverConfig::process().clone();
+    assert!(
+        !process_policy.map_prover_key,
+        "direct-keygen test must exercise a process policy without key mapping"
+    );
+    let (proof, public_inputs, _) = ir
+        .prove_with_context(
+            ChaCha20Rng::from_seed([42; 32]),
+            &heap,
+            pk.clone(),
+            &preimage,
+            &ProverContext::new(process_policy),
+        )
+        .await
+        .expect("directly generated key proves with matching policy");
+    vk.verify(&verifier_params, &proof, public_inputs.into_iter())
+        .expect("verify direct keygen proof");
+
+    let mapped = ProverConfig::mapped_key();
+    let error = ir
+        .prove_with_context(
+            ChaCha20Rng::from_seed([42; 32]),
+            &heap,
+            pk,
+            &preimage,
+            &ProverContext::new(mapped),
+        )
+        .await
+        .expect_err("generated key must not silently satisfy mapped-key request");
+    assert!(error.to_string().contains("serialize and reload"));
+}
+
+#[actix_web::test]
 async fn explicit_key_cache_reuses_only_the_same_policy() {
     let ir = IrSource::load(
         &br#"{

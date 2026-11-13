@@ -66,7 +66,7 @@ panic = "abort"
 midnight-curves = { git = "https://github.com/betsudo/midnight-zk", rev = "6efa967d7f349ba77e35e2f6763a8d17b7df01e3" }
 midnight-proofs = { git = "https://github.com/betsudo/midnight-zk", rev = "6efa967d7f349ba77e35e2f6763a8d17b7df01e3" }
 midnight-zk-stdlib = { git = "https://github.com/betsudo/midnight-zk", rev = "6efa967d7f349ba77e35e2f6763a8d17b7df01e3" }
-midnight-zkir = { git = "https://github.com/betsudo/midnight-zkir", rev = "fe0b3838b93cb4ca02d806b338c82c6d462a1aee" }
+midnight-zkir = { git = "https://github.com/betsudo/midnight-zkir", rev = "e1e93357383bcfd3e711ac1161e6e5988454cbb6" }
 midnight-base-crypto = { path = "base-crypto" }
 midnight-serialize = { path = "serialize" }
 # midnight-zkir v3 asks crates.io for transient-crypto ^3.0.0; resolve it to
