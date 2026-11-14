@@ -12,9 +12,7 @@ members = [
     "onchain-vm",
     "storage",
     "zkir",
-    "zkir-v3",
     "zkir-wasm",
-    "zkir-v3-wasm",
     "transient-crypto",
     "base-crypto",
     "base-crypto-derive",
@@ -69,8 +67,9 @@ panic = "abort"
 [patch.crates-io]
 midnight-base-crypto = { path = "base-crypto" }
 midnight-serialize = { path = "serialize" }
-# Because we rely on additions in 2.2
-midnight-transient-crypto-old = { git = "https://github.com/midnightntwrk/midnight-ledger", tag = "transient-crypto-2.2.0-rc.1", package = "midnight-transient-crypto" }
+# midnight-zkir v3 asks crates.io for transient-crypto ^3.0.0; resolve it to
+# the in-tree copy so both share one set of types.
+midnight-transient-crypto = { path = "transient-crypto" }
 
 [workspace.metadata.spellcheck]
 config = ".spellcheck/cargo-spellcheck.toml"
