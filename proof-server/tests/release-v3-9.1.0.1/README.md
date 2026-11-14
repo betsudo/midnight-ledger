@@ -27,6 +27,7 @@ The generated files have these SHA-256 digests:
 | `ir.bin` | `523d65c25ee1c4ff5158670001a865634bf06c38e351eed7e4d2e9d869d5cfde` |
 | `ir.json` | `299fb6272d2475c30b2ce4feaba11ef32d1868a1389100502a4980081005d01c` |
 | `params.bin` | `8632a976de81c4362a110ab696f74a91c2dea5622bbf11f5b9e1de0afcc490eb` |
+| `preimage.bin` | `cde2ef3458b1ab6ea57eae7cd48a3a7e54e4abd5957a55e056d7a3112abafaa9` |
 | `proof.bin` | `03ad60e63fd57c830c7a7fbb023f743f94814801897c0eed074ac406bf4360be` |
 | `prover-key.bin` | `d17c6ad720659a45726ec48cba834766e1b8fc2e5e17a79d376ea54bf728cec1` |
 | `verifier-key.bin` | `7b953d3fce3f9abe8275add6d885a4ee8c8b3f2f6cc0db5665e3c002f6ed7256` |
@@ -38,3 +39,18 @@ verify with the released verifier key and have identical proof bytes. It also
 rejects truncated key/proof bytes and a mismatched public statement. Run with
 `MIDNIGHT_BENCH_REQUIRE_SPILL=1` to turn a failed spill attempt into a test
 failure rather than a heap fallback.
+
+`preimage.bin` is the tagged release serialization of the same preimage in
+`exporter.rs` (`binding_input = 42`, `inputs = [1]`, key location `release-v3`).
+It was emitted by the unmodified `ledger-9.1.0.1` transient-crypto crate.
+The TypeScript integration test uses this preimage with the released ZKIR 3.2.1
+WASM package and the release-tag IR, keys, and parameters. Its proof is checked
+by the native Ledger9 verifier with the release-tag verifier key. ZKIR 3.2.1
+changes chip inference for some Compact circuits but does not change the IR
+wire format; the Ledger9 stable tag itself pins ZKIR 3.2.0.
+
+Local gate on 2026-11-14: both native fixture tests passed. The published
+`@midnightntwrk/zkir-v3@3.2.1` package loaded the release IR, produced the
+expected empty witness output, and generated a 3,461-byte proof using the
+release preimage and key material. The native Ledger9 verifier accepted that
+WASM proof with the release verifier key and rejected a different public input.

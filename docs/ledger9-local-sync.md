@@ -1,6 +1,17 @@
 # Local Ledger9 fork sync and proof migration
 
-This records the release-compatible integration for [betsudo/midnight-ledger#29](https://github.com/betsudo/midnight-ledger/issues/29) and [#30](https://github.com/betsudo/midnight-ledger/issues/30). The current-branch baseline is published as [PR #33](https://github.com/betsudo/midnight-ledger/pull/33), stacked on the plain upstream sync [PR #31](https://github.com/betsudo/midnight-ledger/pull/31). [PR #36](https://github.com/betsudo/midnight-ledger/pull/36) combines the 0.8.2 request-context boundary, HTTP request ownership, and request-owned key loading. PRs #34 and #35 remain as superseded review artifacts. The optimized 0.8.4 candidate in PR #32 is a separate, wire-incompatible line. It does not change Ledger8. Recheck upstream heads before merging.
+This records the release-compatible integration for [betsudo/midnight-ledger#29](https://github.com/betsudo/midnight-ledger/issues/29) and [#30](https://github.com/betsudo/midnight-ledger/issues/30). The upstream sync [PR #31](https://github.com/betsudo/midnight-ledger/pull/31), current-branch baseline [PR #33](https://github.com/betsudo/midnight-ledger/pull/33), and request-context integration [PR #36](https://github.com/betsudo/midnight-ledger/pull/36) are merged on the fork's `ledger-9` branch. PRs #34 and #35 remain as superseded review artifacts. The optimized 0.8.4 candidate in PR #32 is a separate, wire-incompatible line. Ledger8 is outside this work.
+
+## Stable Ledger9 release contract (checked 2026-11-14)
+
+| Component | Stable tag or package | Relationship to this fork |
+| --- | --- | --- |
+| Ledger9 | [`ledger-9.1.0.1`](https://github.com/midnightntwrk/midnight-ledger/releases/tag/ledger-9.1.0.1), commit `a2b30128`; `midnight-ledger-v9` crate and `@midnight-ntwrk/ledger-v9` package `1.0.1` | Stable wire and behavior fixture. Fork `ledger-9` contains this commit but has later development changes and a `1.0.2` crate version. |
+| Proof server | [`proof-server-9.0.1`](https://github.com/midnightntwrk/midnight-ledger/releases/tag/proof-server-9.0.1), same commit; image `ghcr.io/midnight-ntwrk/proof-server:9.0.1` | Stable proof service fixture. Fork branch reports `9.0.2-rc.1`; it is not a 9.0.1 rebuild. |
+| V3 and proving crates | Ledger tag pins `midnight-zkir 3.2.0`, `midnight-proofs 0.8.2`, `midnight-circuits 7.3.0`, and `midnight-zk-stdlib 2.4.0`; standalone [ZKIR 3.2.1](https://github.com/midnightntwrk/midnight-zkir/releases/tag/zkir-3.2.1) is the latest stable bug fix | Current V3 WASM input is 3.2.1; the release fixture tests compatibility with 3.2.0 keys and IR. The fork keeps the optimized proofs crate at the 0.8.2 interface and version. |
+| Network services | [Node 2.1.101](https://github.com/midnightntwrk/midnight-node/releases/tag/node-2.1.101) and [Indexer 4.4.101](https://github.com/midnightntwrk/midnight-indexer/releases/tag/v4.4.101) | The indexer release explicitly pairs these with Ledger 9.1.0.1. They are deployment compatibility references; neither service is modified here. |
+
+The V3 gate in [the fixture README](../proof-server/tests/release-v3-9.1.0.1/README.md) checks the stable release IR, key, parameter, proof, and preimage bytes in native Rust and the released ZKIR 3.2.1 WASM surface. The integration job passes its WASM proof to the native verifier using the stable release verifier key. Exact-head CI determines whether this fork's later development branch passes that gate.
 
 | Line | Baseline | Local head | Purpose |
 | --- | --- | --- | --- |
