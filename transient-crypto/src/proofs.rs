@@ -1139,8 +1139,8 @@ impl<T: Zkir> ProverKey<T> {
     /// layout matches; a subsequent mapped request must not inherit it.
     /// Heap-backed keys share the five-entry legacy cache when their layout
     /// is known; the separate policy cache retains one mapped key. A
-    /// process-wide build gate prevents concurrent misses from constructing
-    /// multiple large keys at once.
+    /// process-wide build gate prevents concurrent explicit-policy misses
+    /// from constructing multiple large keys at once.
     pub fn init_with_policy(
         &self,
         policy: &ProverConfig,
@@ -1216,27 +1216,27 @@ impl<T: Zkir> ProverKey<T> {
             return Ok(key);
         }
         // A legacy initializer can change this key's state while we wait at
-        // the global gate. Recheck under the key lock and hold it only for the
-        // reader, preserving the old exclusion with legacy `init()`.
+        // the global gate. Recheck under the key lock. If the key is still
+        // lazy, hold the lock through the read to preserve exclusion with
+        // legacy `init()`. Otherwise the serialized snapshot remains valid
+        // for a read under this request's policy, even if legacy `init()`
+        // installed a different layout or marked its own read invalid.
         let mutex = lock_with_context(&self.0, context, "prover_key.lock")?;
-        match &*mutex {
-            InnerProverKey::Uninitialized(_) => {}
-            InnerProverKey::Invalid(_) => {
-                return Err(anyhow::anyhow!("known invalid prover key"));
-            }
+        let key_lock = match &*mutex {
+            InnerProverKey::Uninitialized(_) => Some(mutex),
             InnerProverKey::Initialized(key, Some(false)) if !policy.map_prover_key => {
                 check_key_cancelled(context, "prover_key.initialized")?;
                 return Ok(key.clone());
             }
-            InnerProverKey::Initialized(_, _)
+            InnerProverKey::Invalid(_)
+            | InnerProverKey::Initialized(_, _)
             | InnerProverKey::GeneratedUnderProcessPolicy(_, _) => {
-                return Err(anyhow::anyhow!(
-                    "explicit memory policy requires a serialized prover key"
-                ));
+                drop(mutex);
+                None
             }
-        }
+        };
         let key = Arc::new(T::read_raw_pk_with_policy(&data[..], policy)?);
-        drop(mutex);
+        drop(key_lock);
         check_key_cancelled(context, "prover_key.read")?;
         if policy.map_prover_key {
             if let Ok(mut cache) = PK_POLICY_CACHE.lock() {
