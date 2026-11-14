@@ -13,6 +13,7 @@
 
 use std::sync::Arc;
 
+use base_crypto::data_provider::UnknownManagedArtifact;
 use ledger::error::TransactionProvingError;
 use ledger::prove::Resolver;
 use ledger::structure::ProofVersioned;
@@ -30,6 +31,21 @@ use storage::db::DB;
 use zswap::prove::ParamsLoadFailure;
 
 fn classify_proving_error(error: ProvingError) -> WorkError {
+    fn is_unknown_managed_artifact(cause: &(dyn std::error::Error + 'static)) -> bool {
+        if cause.is::<UnknownManagedArtifact>() {
+            return true;
+        }
+        if let Some(io_error) = cause.downcast_ref::<std::io::Error>() {
+            return io_error
+                .get_ref()
+                .is_some_and(|inner| is_unknown_managed_artifact(inner));
+        }
+        if let Some(parameter_error) = cause.downcast_ref::<ParamsLoadFailure>() {
+            return is_unknown_managed_artifact(&parameter_error.0);
+        }
+        false
+    }
+
     if error.chain().any(|cause| {
         matches!(
             cause.downcast_ref::<midnight_proofs::plonk::Error>(),
@@ -37,6 +53,10 @@ fn classify_proving_error(error: ProvingError) -> WorkError {
         )
     }) {
         return WorkError::CancelledUnexpectedly;
+    }
+
+    if error.chain().any(is_unknown_managed_artifact) {
+        return WorkError::BadInput(error.to_string());
     }
     let server_owned_params = error.chain().any(|cause| {
         cause.is::<ParamsLoadFailure>()
@@ -171,6 +191,9 @@ mod tests {
             let wrap = proof_envelope_for_vk(key).expect("released verifier key version");
             assert!(matches!(wrap(Proof(Vec::new())), ProofVersioned::V3(_)));
         }
+        let legacy = include_bytes!("../../zswap/static/sign.verifier");
+        let wrap = proof_envelope_for_vk(legacy).expect("legacy verifier key version");
+        assert!(matches!(wrap(Proof(Vec::new())), ProofVersioned::V2(_)));
         assert!(matches!(
             proof_envelope_for_vk(&[]),
             Err(WorkError::BadInput(_))
@@ -197,6 +220,31 @@ mod tests {
                 .into()
             ),
             WorkError::CancelledUnexpectedly
+        ));
+    }
+
+    #[tokio::test]
+    async fn unsupported_managed_parameter_is_client_input() {
+        use base_crypto::data_provider::{FetchMode, MidnightDataProvider, OutputMode};
+
+        let provider = MidnightDataProvider::new(FetchMode::OnDemand, OutputMode::Log, vec![])
+            .expect("provider configuration");
+        let error = provider
+            .get_file(&MidnightDataProvider::name_k(26), "unsupported parameters")
+            .await
+            .expect_err("k=26 is not a managed SRS");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        let marked = std::io::Error::new(error.kind(), ParamsLoadFailure(error));
+        assert!(matches!(
+            classify_proving_error(marked.into()),
+            WorkError::BadInput(_)
+        ));
+
+        let missing = std::io::Error::new(std::io::ErrorKind::NotFound, "known SRS missing");
+        let marked = std::io::Error::new(missing.kind(), ParamsLoadFailure(missing));
+        assert!(matches!(
+            classify_proving_error(marked.into()),
+            WorkError::InternalError(_)
         ));
     }
 
