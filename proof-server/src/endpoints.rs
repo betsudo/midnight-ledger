@@ -327,10 +327,12 @@ pub(crate) async fn check(
                             ),
                             Box::new(move |_: KeyLocation| Box::pin(std::future::ready(Ok(None)))),
                         );
+                        // Only bundled server key stores can fail here; an
+                        // unknown client-selected location returns None below.
                         let proof_data = resolver
                             .resolve_key(ppi.key_location().clone())
                             .await
-                            .map_err(|e| WorkError::BadInput(e.to_string()))?;
+                            .map_err(|e| WorkError::InternalError(e.to_string()))?;
 
                         proof_data
                             .ok_or_else(|| {
@@ -425,10 +427,12 @@ pub(crate) async fn prove(
                         let proving_data = match data.as_ref() {
                             Some(pkm) => Cow::Borrowed(pkm.as_ref()),
                             None => Cow::Owned(
+                                // Fetch/read failures in bundled key stores
+                                // belong to the server; unknown keys return None.
                                 resolver
                                     .resolve_key(ppi.key_location.clone())
                                     .await
-                                    .map_err(|e| WorkError::BadInput(e.to_string()))?
+                                    .map_err(|e| WorkError::InternalError(e.to_string()))?
                                     .ok_or_else(|| {
                                         WorkError::BadInput(format!(
                                             "couldn't find key {}",
