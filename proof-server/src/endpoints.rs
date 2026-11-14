@@ -438,10 +438,13 @@ pub(crate) async fn prove(
                             ),
                         };
 
+                        let wrap = versioned_ir::proof_envelope_for_vk(&proving_data.verifier_key)?;
                         let context = ProverContext::process().with_cancel(proof_cancel);
-                        versioned_ir::prove(ppi, &proving_data.ir_source, &resolver, &context)
-                            .await?
-                            .0
+                        let proof =
+                            versioned_ir::prove(ppi, &proving_data.ir_source, &resolver, &context)
+                                .await?
+                                .0;
+                        wrap(proof)
                     }
                     // Footgun: If we add a new version, this needs to be covered here, but it's marked
                     // #[non_exhaustive], so we always need the base case.

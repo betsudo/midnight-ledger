@@ -20,7 +20,7 @@ use rand::rngs::OsRng;
 #[allow(unused_imports)]
 use serialize::{peek_tag, tagged_deserialize};
 use std::io::Cursor;
-use transient_crypto::proofs::{ProofPreimage, ProvingError, Zkir};
+use transient_crypto::proofs::{Proof, ProofPreimage, ProvingError, Zkir};
 use zkir as zkir_v2;
 
 use crate::endpoints::PUBLIC_PARAMS;
@@ -88,7 +88,7 @@ pub(crate) async fn prove(
     ir_source: &[u8],
     resolver: &Resolver,
     context: &ProverContext,
-) -> Result<(ProofVersioned, Vec<Option<usize>>), WorkError> {
+) -> Result<(Proof, Vec<Option<usize>>), WorkError> {
     let tag = peek_tag(&mut std::io::Cursor::new(ir_source))
         .map_err(|e| WorkError::BadInput(e.to_string()))?;
     match tag.as_str() {
@@ -112,12 +112,11 @@ pub(crate) async fn prove(
             let skips = ppi
                 .check(&ir)
                 .map_err(|e| WorkError::BadInput(e.to_string()))?;
-            Ok((ProofVersioned::V2(proof), skips))
+            Ok((proof, skips))
         }
         "ir-source[v3-generic]" => ppi
             .prove_with_context::<zkir_v3::IrSource>(OsRng, &*PUBLIC_PARAMS, resolver, context)
             .await
-            .map(|(proof, skips)| (ProofVersioned::V3(proof), skips))
             .map_err(classify_proving_error),
         _ => Err(WorkError::BadInput(format!(
             "Unsupported ZKIR tag: '{tag}'"
@@ -125,9 +124,39 @@ pub(crate) async fn prove(
     }
 }
 
+/// Ledger's wire proof version follows the verifier-key format, not the IR tag.
+/// The released in-tree ZKIR V2 fixture already uses verifier-key[v7].
+pub(crate) fn proof_envelope_for_vk(
+    verifier_key: &[u8],
+) -> Result<fn(Proof) -> ProofVersioned, WorkError> {
+    let tag =
+        peek_tag(&mut Cursor::new(verifier_key)).map_err(|e| WorkError::BadInput(e.to_string()))?;
+    let wrap: fn(Proof) -> ProofVersioned = match tag.as_str() {
+        "verifier-key[v6]" => ProofVersioned::V2,
+        "verifier-key[v7]" => ProofVersioned::V3,
+        _ => {
+            return Err(WorkError::BadInput(format!(
+                "Unsupported verifier key tag: '{tag}'"
+            )));
+        }
+    };
+    Ok(wrap)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn released_v2_and_v3_keys_use_the_v3_proof_envelope() {
+        for key in [
+            include_bytes!("../tests/release-v2-9.1.0.1/verifier-key.bin").as_slice(),
+            include_bytes!("../tests/release-v3-9.1.0.1/verifier-key.bin").as_slice(),
+        ] {
+            let wrap = proof_envelope_for_vk(key).expect("released verifier key version");
+            assert!(matches!(wrap(Proof(Vec::new())), ProofVersioned::V3(_)));
+        }
+    }
 
     #[test]
     fn parameter_io_failure_survives_proving_error_erasure() {
