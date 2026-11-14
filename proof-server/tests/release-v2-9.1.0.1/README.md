@@ -38,3 +38,8 @@ truncated key/proof rejection and a mismatched public statement. Run with
 `MIDNIGHT_SPILL_COSETS=1 MIDNIGHT_SPILL_FLOOR_K=0`
 `MIDNIGHT_BENCH_REQUIRE_SPILL=1` to exercise the V2 compatibility entry
 point's process spill policy and fail on a spill error.
+
+`release_v2_http_context.rs` sends the same released V2 key material through
+the proof server's `/prove` endpoint. Its `verifier-key[v7]` must produce a
+`ProofVersioned::V3` envelope, and the released verifier key must accept the
+returned proof.
