@@ -70,6 +70,50 @@ impl Resolver for KeyResolver {
     }
 }
 
+struct CancelDuringResolution(CancelToken);
+
+impl Resolver for CancelDuringResolution {
+    async fn resolve_key(&self, _key: KeyLocation) -> io::Result<Option<ProvingKeyMaterial>> {
+        self.0.cancel();
+        // The bytes are deliberately invalid: cancellation after resolution
+        // must win before the IR or prover key is deserialized.
+        Ok(Some(ProvingKeyMaterial {
+            prover_key: vec![0],
+            verifier_key: vec![0],
+            ir_source: vec![0],
+        }))
+    }
+}
+
+#[actix_web::test]
+async fn cancellation_during_key_resolution_stops_before_deserialization() {
+    let token = CancelToken::new();
+    let preimage = ProofPreimage {
+        binding_input: 0.into(),
+        communications_commitment: None,
+        inputs: vec![],
+        private_transcript: vec![],
+        public_transcript_inputs: vec![],
+        public_transcript_outputs: vec![],
+        key_location: KeyLocation(Cow::Borrowed("cancel-test")),
+    };
+    let error = preimage
+        .prove_with_context::<IrSource>(
+            ChaCha20Rng::from_seed([42; 32]),
+            &NoFallback,
+            &CancelDuringResolution(token.clone()),
+            &ProverContext::new(ProverConfig::heap()).with_cancel(token),
+        )
+        .await
+        .expect_err("cancelled resolution must stop before decoding invalid key material");
+    assert!(matches!(
+        error.downcast_ref::<midnight_proofs::plonk::Error>(),
+        Some(midnight_proofs::plonk::Error::Cancelled {
+            phase: "preimage.resolve_key"
+        })
+    ));
+}
+
 #[actix_web::test]
 async fn generated_v3_key_proves_with_matching_policy_but_rejects_mapped_key_request() {
     let _cache_test = POLICY_CACHE_TEST_LOCK.lock().await;

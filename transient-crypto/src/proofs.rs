@@ -1811,13 +1811,15 @@ impl ProofPreimage {
             }
             .into());
         }
-        let proof_data = resolver
-            .resolve_key(self.key_location.clone())
-            .await?
-            .ok_or(anyhow::Error::msg(format!(
-                "failed to find proving key for '{}'",
-                self.key_location.0
-            )))?;
+        let proof_data = resolver.resolve_key(self.key_location.clone()).await;
+        // Resolution may await remote storage. A request cancelled while it
+        // waits must stop before an error or absent key is classified, or any
+        // returned material is deserialized.
+        check_key_cancelled(context, "preimage.resolve_key")?;
+        let proof_data = proof_data?.ok_or(anyhow::Error::msg(format!(
+            "failed to find proving key for '{}'",
+            self.key_location.0
+        )))?;
         let ir = Z::load_ir_from_tagged(io::Cursor::new(&proof_data.ir_source[..]))?;
         let verifier_key = tagged_deserialize::<VerifierKey>(&mut &proof_data.verifier_key[..])?;
         let prover_key =
