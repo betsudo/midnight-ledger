@@ -63,9 +63,9 @@ panic = "abort"
 # Keep the released 0.8.2 proof format while selecting the additive context
 # adapters by immutable source commits. The V2 path still uses the in-tree IR.
 [patch.crates-io]
-midnight-curves = { git = "https://github.com/betsudo/midnight-zk", rev = "e563d730f5b21a85283a4a379e0b0979b04832aa" }
-midnight-proofs = { git = "https://github.com/betsudo/midnight-zk", rev = "e563d730f5b21a85283a4a379e0b0979b04832aa" }
-midnight-zk-stdlib = { git = "https://github.com/betsudo/midnight-zk", rev = "e563d730f5b21a85283a4a379e0b0979b04832aa" }
+midnight-curves = { git = "https://github.com/betsudo/midnight-zk", rev = "893c060cdb45bc2330489222dcdd06d3b5aac0e9" }
+midnight-proofs = { git = "https://github.com/betsudo/midnight-zk", rev = "893c060cdb45bc2330489222dcdd06d3b5aac0e9" }
+midnight-zk-stdlib = { git = "https://github.com/betsudo/midnight-zk", rev = "893c060cdb45bc2330489222dcdd06d3b5aac0e9" }
 midnight-zkir = { git = "https://github.com/betsudo/midnight-zkir", rev = "d8667b9eae463de16dab7934cdd09e827a68ae24" }
 midnight-base-crypto = { path = "base-crypto" }
 midnight-serialize = { path = "serialize" }
