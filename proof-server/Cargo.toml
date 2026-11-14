@@ -15,6 +15,7 @@ ledger = { path = "../ledger", package = "midnight-ledger-v9", default-features 
 zswap = { path = "../zswap", package = "midnight-zswap" }
 base-crypto = { path = "../base-crypto", package = "midnight-base-crypto" }
 transient-crypto = { path = "../transient-crypto", package = "midnight-transient-crypto" }
+midnight-proofs = { version = "^0.8.2", default-features = false }
 storage = { path = "../storage", package = "midnight-storage" }
 serialize = { path = "../serialize", package = "midnight-serialize" }
 

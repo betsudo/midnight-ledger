@@ -17,6 +17,7 @@ use base_crypto::data_provider::UnknownManagedArtifact;
 use ledger::error::TransactionProvingError;
 use ledger::prove::{BuiltinKeyLoadFailure, Resolver};
 use ledger::structure::ProofVersioned;
+use midnight_proofs::config::ProverContext;
 use rand::rngs::OsRng;
 #[allow(unused_imports)]
 use serialize::{peek_tag, tagged_deserialize};
@@ -55,6 +56,15 @@ fn classify_proving_error(error: ProvingError) -> WorkError {
         false
     }
 
+    if error.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<midnight_proofs::plonk::Error>(),
+            Some(midnight_proofs::plonk::Error::Cancelled { .. })
+        )
+    }) {
+        return WorkError::CancelledUnexpectedly;
+    }
+
     if error.chain().any(is_builtin_key_failure) {
         return WorkError::InternalError(error.to_string());
     }
@@ -84,21 +94,6 @@ pub(crate) fn classify_transaction_proving_error<D: DB>(
         TransactionProvingError::Proving(error) => classify_proving_error(error),
         TransactionProvingError::Tokio(error) => classify_proving_error(error.into()),
         other => WorkError::BadInput(other.to_string()),
-    }
-}
-
-/// Ledger's proof wire version follows the verifier-key format, not the IR tag.
-pub(crate) fn proof_envelope_for_vk(
-    verifier_key: &[u8],
-) -> Result<fn(Proof) -> ProofVersioned, WorkError> {
-    let tag =
-        peek_tag(&mut Cursor::new(verifier_key)).map_err(|e| WorkError::BadInput(e.to_string()))?;
-    match tag.as_str() {
-        "verifier-key[v6]" => Ok(ProofVersioned::V2),
-        "verifier-key[v7]" => Ok(ProofVersioned::V3),
-        _ => Err(WorkError::BadInput(format!(
-            "Unsupported verifier key tag: '{tag}'"
-        ))),
     }
 }
 
@@ -139,6 +134,7 @@ pub(crate) async fn prove(
     ppi: Arc<ProofPreimage>,
     ir_source: &[u8],
     resolver: &Resolver,
+    context: &ProverContext,
 ) -> Result<(Proof, Vec<Option<usize>>), WorkError> {
     let tag = peek_tag(&mut std::io::Cursor::new(ir_source))
         .map_err(|e| WorkError::BadInput(e.to_string()))?;
@@ -165,16 +161,34 @@ pub(crate) async fn prove(
                 .map_err(|e| WorkError::BadInput(e.to_string()))?;
             Ok((proof, skips))
         }
-        "ir-source[v3-generic]" => {
-            //let ir_source = tagged_deserialize::<zkir_v3::IrSource>(ir_source).map_err(|e| e.to_string())?;
-            ppi.prove::<zkir_v3::IrSource>(OsRng, &*PUBLIC_PARAMS, resolver)
-                .await
-                .map_err(classify_proving_error)
-        }
+        "ir-source[v3-generic]" => ppi
+            .prove_with_context::<zkir_v3::IrSource>(OsRng, &*PUBLIC_PARAMS, resolver, context)
+            .await
+            .map_err(classify_proving_error),
         _ => Err(WorkError::BadInput(format!(
             "Unsupported ZKIR tag: '{tag}'"
         ))),
     }
+}
+
+/// Ledger's wire proof version follows the verifier-key format, not the IR tag.
+/// The released in-tree ZKIR V2 fixture uses verifier-key[v7], while the
+/// bundled zswap verifier key uses v6; the IR tag alone cannot select it.
+pub(crate) fn proof_envelope_for_vk(
+    verifier_key: &[u8],
+) -> Result<fn(Proof) -> ProofVersioned, WorkError> {
+    let tag =
+        peek_tag(&mut Cursor::new(verifier_key)).map_err(|e| WorkError::BadInput(e.to_string()))?;
+    let wrap: fn(Proof) -> ProofVersioned = match tag.as_str() {
+        "verifier-key[v6]" => ProofVersioned::V2,
+        "verifier-key[v7]" => ProofVersioned::V3,
+        _ => {
+            return Err(WorkError::BadInput(format!(
+                "Unsupported verifier key tag: '{tag}'"
+            )));
+        }
+    };
+    Ok(wrap)
 }
 
 #[cfg(test)]
@@ -211,6 +225,15 @@ mod tests {
         assert!(matches!(
             classify_proving_error(ProvingError::msg("invalid witness")),
             WorkError::BadInput(_)
+        ));
+        assert!(matches!(
+            classify_proving_error(
+                midnight_proofs::plonk::Error::Cancelled {
+                    phase: "trace.start"
+                }
+                .into()
+            ),
+            WorkError::CancelledUnexpectedly
         ));
     }
 

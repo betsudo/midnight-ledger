@@ -49,6 +49,24 @@ impl Default for IngressConfig {
     }
 }
 
+/// HTTP transport policy. Disallowing half-closed HTTP/1 connections lets
+/// Actix drop a pending handler when the peer closes its write side, but also
+/// rejects clients that intentionally half-close after sending a request.
+#[derive(Clone, Copy)]
+pub struct ServerConfig {
+    pub ingress: IngressConfig,
+    pub allow_half_closed_clients: bool,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            ingress: IngressConfig::default(),
+            allow_half_closed_clients: true,
+        }
+    }
+}
+
 pub(crate) struct IngressState {
     pub config: IngressConfig,
     pub permits: Arc<Semaphore>,
@@ -64,6 +82,24 @@ pub fn server_with_ingress_config(
     pool: WorkerPool,
     ingress_config: IngressConfig,
 ) -> std::io::Result<(Server, u16)> {
+    server_with_config(
+        port,
+        fetch_params,
+        pool,
+        ServerConfig {
+            ingress: ingress_config,
+            ..ServerConfig::default()
+        },
+    )
+}
+
+pub fn server_with_config(
+    port: u16,
+    fetch_params: bool,
+    pool: WorkerPool,
+    config: ServerConfig,
+) -> std::io::Result<(Server, u16)> {
+    let ingress_config = config.ingress;
     if ingress_config.max_body_bytes == 0
         || ingress_config.max_inflight == 0
         || ingress_config.read_timeout.is_zero()
@@ -99,6 +135,7 @@ pub fn server_with_ingress_config(
             app
         }
     })
+    .h1_allow_half_closed(config.allow_half_closed_clients)
     .bind(("0.0.0.0", port))?;
     let port = http_server.addrs()[0].port();
     let srv = http_server.run();

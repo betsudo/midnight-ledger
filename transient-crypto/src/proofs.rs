@@ -24,6 +24,7 @@ use midnight_curves::Bls12;
 #[cfg(not(target_family = "wasm"))]
 use midnight_proofs::poly::commitment::Params as _;
 use midnight_proofs::{
+    config::{ProverConfig, ProverContext},
     poly::kzg::params::{ParamsKZG, ParamsVerifierKZG},
     utils::SerdeFormat,
 };
@@ -46,9 +47,13 @@ use std::io::Write;
 use std::io::{self, Read, Seek};
 #[cfg(feature = "proptest")]
 use std::marker::PhantomData;
-use std::sync::{Arc, Mutex};
-use std::{any::Any, cmp::Ordering};
-use std::{borrow::Cow, num::NonZeroUsize};
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
+use std::time::Duration;
+use std::{
+    any::{Any, TypeId},
+    cmp::Ordering,
+};
+use std::{borrow::Cow, collections::VecDeque, num::NonZeroUsize};
 use storage_core::Storable;
 use storage_core::arena::ArenaKey;
 use storage_core::db::DB;
@@ -839,6 +844,24 @@ pub trait Zkir: Any + Send + Sync + Debug + Sized {
         preimage: &ProofPreimage,
     ) -> Result<(Proof, Vec<Fr>, Vec<Option<usize>>), ProvingError>;
 
+    /// Prove with request-owned storage policy and cancellation.
+    ///
+    /// Existing IR implementations can keep the original `prove` method.
+    /// They must opt in before this entry point can be used; the default
+    /// returns an explicit error rather than ignoring the context.
+    async fn prove_with_context(
+        &self,
+        _rng: impl Rng + CryptoRng,
+        _params: &impl ParamsProverProvider,
+        _pk: ProverKey<Self>,
+        _preimage: &ProofPreimage,
+        _context: &ProverContext,
+    ) -> Result<(Proof, Vec<Fr>, Vec<Option<usize>>), ProvingError> {
+        Err(anyhow::anyhow!(
+            "explicit proof context is not supported by this ZKIR"
+        ))
+    }
+
     /// Returns the k value for this circuit
     fn k(&self) -> u8;
 
@@ -865,6 +888,17 @@ pub trait Zkir: Any + Send + Sync + Debug + Sized {
 
     /// Reads a raw (untagged) prover key from a byte stream.
     fn read_raw_pk(reader: impl Read) -> io::Result<Self::ProverKey>;
+    /// Read a raw key under an explicit memory policy. Implementations using
+    /// context proving must opt in rather than silently ignoring the policy.
+    fn read_raw_pk_with_policy(
+        _reader: impl Read,
+        _policy: &ProverConfig,
+    ) -> io::Result<Self::ProverKey> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "explicit prover-key memory policy is not supported by this ZKIR",
+        ))
+    }
     /// Writes a raw (untagged) prover key to a byte stream.
     fn write_raw_pk(writer: impl Write, pk: &Self::ProverKey) -> io::Result<()>;
 }
@@ -887,15 +921,21 @@ impl<T: Zkir> Distribution<ProverKey<T>> for Standard {
         let size: u8 = rng.gen_range(0..32);
         let mut bytes = Vec::with_bounded_capacity(size as usize);
         rng.fill_bytes(&mut bytes);
-        ProverKey(Arc::new(Mutex::new(InnerProverKey::Uninitialized(bytes))))
+        ProverKey(Arc::new(Mutex::new(InnerProverKey::Uninitialized(
+            Arc::new(bytes),
+        ))))
     }
 }
 
 #[derive(Debug, Clone)]
 pub(crate) enum InnerProverKey<T: Zkir> {
-    Uninitialized(Vec<u8>),
-    Invalid(Vec<u8>),
-    Initialized(Arc<T::ProverKey>),
+    Uninitialized(Arc<Vec<u8>>),
+    Invalid(Arc<Vec<u8>>),
+    Initialized(Arc<T::ProverKey>, Option<bool>),
+    /// A freshly generated key whose process policy is known. Keep this
+    /// distinct from a legacy-initialized key that may lack known storage
+    /// provenance for an explicit request.
+    GeneratedUnderProcessPolicy(Arc<T::ProverKey>, ProverConfig),
 }
 
 impl<T: Zkir + Tagged> Tagged for ProverKey<T> {
@@ -908,10 +948,161 @@ impl<T: Zkir + Tagged> Tagged for ProverKey<T> {
 }
 
 const PK_CACHE_SIZE: usize = 5;
+// Explicit mapped keys cannot enter the legacy bytes-only cache: a later
+// process-policy lookup could otherwise reuse a different mapped layout.
+const PK_POLICY_MAPPED_CACHE_SIZE: usize = 1;
+
+struct PolicyKeyCacheEntry {
+    hash: HashOutput,
+    type_id: TypeId,
+    policy: ProverConfig,
+    key: Arc<dyn Any + Send + Sync>,
+}
+
 lazy_static! {
     // forall<T> Arc<MidnightPK<T>>
-    static ref PK_CACHE: Mutex<LruCache<HashOutput, Arc<dyn Any + Send + Sync>>> =
+    // The second key component is the known mapped layout, or None for keys
+    // supplied by from_raw. Both layouts share the same five-entry limit.
+    static ref PK_CACHE: Mutex<LruCache<(HashOutput, Option<bool>), Arc<dyn Any + Send + Sync>>> =
         Mutex::new(LruCache::new(NonZeroUsize::new(PK_CACHE_SIZE).unwrap()));
+    static ref PK_POLICY_CACHE: Mutex<VecDeque<PolicyKeyCacheEntry>> =
+        Mutex::new(VecDeque::with_capacity(PK_POLICY_MAPPED_CACHE_SIZE));
+    // Admit one explicit-policy key build at a time. Cache hits do not wait.
+    static ref PK_POLICY_BUILD_LOCK: Mutex<()> = Mutex::new(());
+}
+
+fn cached_policy_key<T: Zkir>(
+    cache: &mut VecDeque<PolicyKeyCacheEntry>,
+    hash: &HashOutput,
+    policy: &ProverConfig,
+) -> Option<Arc<T::ProverKey>> {
+    let index = cache.iter().position(|entry| {
+        &entry.hash == hash
+            && entry.type_id == TypeId::of::<T>()
+            && entry.policy.map_prover_key == policy.map_prover_key
+            && entry.policy.spill_dir == policy.spill_dir
+    })?;
+    let entry = cache.remove(index).expect("cache index exists");
+    let key = entry.key.clone().downcast::<T::ProverKey>().ok();
+    cache.push_front(entry);
+    key
+}
+
+fn cached_explicit_key<T: Zkir>(
+    hash: &HashOutput,
+    policy: &ProverConfig,
+) -> Option<Arc<T::ProverKey>> {
+    if policy.map_prover_key {
+        PK_POLICY_CACHE
+            .lock()
+            .ok()
+            .and_then(|mut cache| cached_policy_key::<T>(&mut cache, hash, policy))
+    } else {
+        PK_CACHE
+            .lock()
+            .ok()
+            .and_then(|mut cache| cache.get(&(*hash, Some(false))).cloned())
+            .and_then(|key| key.downcast::<T::ProverKey>().ok())
+    }
+}
+
+fn check_key_cancelled(
+    context: Option<&ProverContext>,
+    phase: &'static str,
+) -> Result<(), ProvingError> {
+    if context.is_some_and(ProverContext::is_cancelled) {
+        Err(midnight_proofs::plonk::Error::Cancelled { phase }.into())
+    } else {
+        Ok(())
+    }
+}
+
+fn lock_with_context<'a, T>(
+    gate: &'a Mutex<T>,
+    context: Option<&ProverContext>,
+    phase: &'static str,
+) -> Result<MutexGuard<'a, T>, ProvingError> {
+    if context.is_none() {
+        // Preserve the blocking lock for policy-only callers. The global
+        // gate has no data, and callers inspect the per-key enum after lock.
+        return Ok(gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner));
+    }
+    loop {
+        check_key_cancelled(context, phase)?;
+        match gate.try_lock() {
+            Ok(guard) => return Ok(guard),
+            Err(TryLockError::Poisoned(poison)) => return Ok(poison.into_inner()),
+            Err(TryLockError::WouldBlock) => std::thread::sleep(Duration::from_millis(10)),
+        }
+    }
+}
+
+#[cfg(test)]
+mod key_build_gate_tests {
+    use super::*;
+    use midnight_proofs::config::CancelToken;
+    use std::sync::mpsc;
+
+    #[test]
+    fn queued_request_can_cancel_while_another_builder_holds_admission() {
+        let gate = Arc::new(Mutex::new(()));
+        let active = gate.lock().expect("hold build admission");
+        let token = CancelToken::new();
+        let context = ProverContext::new(ProverConfig::heap()).with_cancel(token.clone());
+        let (started_tx, started_rx) = mpsc::channel();
+        let waiting_gate = gate.clone();
+        let waiter = std::thread::spawn(move || {
+            started_tx.send(()).expect("announce waiter");
+            lock_with_context(&waiting_gate, Some(&context), "prover_key.wait").map(|_| ())
+        });
+        started_rx.recv().expect("waiter started");
+        std::thread::sleep(Duration::from_millis(25));
+        token.cancel();
+        let error = waiter
+            .join()
+            .expect("waiter thread")
+            .expect_err("cancelled waiter must leave the queue");
+        assert!(matches!(
+            error.downcast_ref::<midnight_proofs::plonk::Error>(),
+            Some(midnight_proofs::plonk::Error::Cancelled {
+                phase: "prover_key.wait"
+            })
+        ));
+        assert!(gate.try_lock().is_err(), "active builder still owns gate");
+        drop(active);
+        assert!(gate.try_lock().is_ok(), "admission remains reusable");
+    }
+
+    #[test]
+    fn per_key_lock_wait_is_cancellable() {
+        let key_mutex = Arc::new(Mutex::new(vec![1u8]));
+        let active = key_mutex.lock().expect("hold key lock");
+        let token = CancelToken::new();
+        let context = ProverContext::new(ProverConfig::heap()).with_cancel(token.clone());
+        let (started_tx, started_rx) = mpsc::channel();
+        let waiting_mutex = key_mutex.clone();
+        let waiter = std::thread::spawn(move || {
+            started_tx.send(()).expect("announce waiter");
+            lock_with_context(&waiting_mutex, Some(&context), "prover_key.lock").map(|_| ())
+        });
+        started_rx.recv().expect("waiter started");
+        std::thread::sleep(Duration::from_millis(25));
+        token.cancel();
+        let error = waiter
+            .join()
+            .expect("waiter thread")
+            .expect_err("cancelled waiter must leave the key lock queue");
+        assert!(matches!(
+            error.downcast_ref::<midnight_proofs::plonk::Error>(),
+            Some(midnight_proofs::plonk::Error::Cancelled {
+                phase: "prover_key.lock"
+            })
+        ));
+        drop(active);
+        assert!(key_mutex.try_lock().is_ok(), "key lock remains reusable");
+    }
 }
 
 impl<T: Zkir> InnerProverKey<T> {
@@ -920,13 +1111,19 @@ impl<T: Zkir> InnerProverKey<T> {
             InnerProverKey::Uninitialized(data) => persistent_hash(&data[..]),
             _ => return,
         };
-        if let Some(pk) = PK_CACHE
+        if let Some((pk, layout)) = PK_CACHE
             .lock()
             .ok()
-            .and_then(|mut c| c.get(&hash).cloned())
-            .and_then(|ptr| ptr.downcast().ok())
+            .and_then(|mut c| {
+                let process_layout = Some(ProverConfig::process().map_prover_key);
+                c.get(&(hash, process_layout))
+                    .cloned()
+                    .map(|key| (key, process_layout))
+                    .or_else(|| c.get(&(hash, None)).cloned().map(|key| (key, None)))
+            })
+            .and_then(|(ptr, layout)| ptr.downcast().ok().map(|key| (key, layout)))
         {
-            *self = InnerProverKey::Initialized(pk);
+            *self = InnerProverKey::Initialized(pk, layout);
         }
     }
 }
@@ -934,9 +1131,24 @@ impl<T: Zkir> InnerProverKey<T> {
 impl<T: Zkir> ProverKey<T> {
     /// Constructs a `ProverKey` from an already-initialized raw inner key.
     pub fn from_raw(raw: T::ProverKey) -> Self {
-        ProverKey(Arc::new(Mutex::new(InnerProverKey::Initialized(Arc::new(
-            raw,
-        )))))
+        ProverKey(Arc::new(Mutex::new(InnerProverKey::Initialized(
+            Arc::new(raw),
+            None,
+        ))))
+    }
+
+    /// Wrap a key produced by key generation under the process memory policy.
+    /// This provenance lets a matching heap request reuse the key directly.
+    /// A mapped-key request still needs a serialized key read under that
+    /// request's policy, since key generation leaves its polynomial fields on
+    /// the heap even when it defers proof-time cosets.
+    pub fn from_raw_under_process_policy(raw: T::ProverKey) -> Self {
+        ProverKey(Arc::new(Mutex::new(
+            InnerProverKey::GeneratedUnderProcessPolicy(
+                Arc::new(raw),
+                ProverConfig::process().clone(),
+            ),
+        )))
     }
 
     /// Initializes the lazy prover key
@@ -944,7 +1156,8 @@ impl<T: Zkir> ProverKey<T> {
         let mut mutex = self.0.lock().expect("mutex is not poisoned");
         mutex.try_cache();
         let data = match &*mutex {
-            InnerProverKey::Initialized(key) => {
+            InnerProverKey::Initialized(key, _)
+            | InnerProverKey::GeneratedUnderProcessPolicy(key, _) => {
                 return Ok(key.clone());
             }
             InnerProverKey::Invalid(_) => {
@@ -961,11 +1174,11 @@ impl<T: Zkir> ProverKey<T> {
         match res {
             Ok(pk) => {
                 let key = Arc::new(pk);
-                PK_CACHE
-                    .lock()
-                    .ok()
-                    .and_then(|mut c| c.put(persistent_hash(&data), key.clone()));
-                *mutex = InnerProverKey::Initialized(key.clone());
+                let mapped_layout = Some(ProverConfig::process().map_prover_key);
+                if let Ok(mut cache) = PK_CACHE.lock() {
+                    cache.put((persistent_hash(&data), mapped_layout), key.clone());
+                }
+                *mutex = InnerProverKey::Initialized(key.clone(), mapped_layout);
                 Ok(key)
             }
             Err(e) => {
@@ -975,16 +1188,142 @@ impl<T: Zkir> ProverKey<T> {
         }
     }
 
+    /// Load a lazy key under the caller's policy without changing this key's
+    /// state. A heap-backed key can share the legacy cache only when its known
+    /// layout matches; a subsequent mapped request must not inherit it.
+    /// Heap-backed keys share the five-entry legacy cache when their layout
+    /// is known; the separate policy cache retains one mapped key. A
+    /// process-wide build gate prevents concurrent explicit-policy misses
+    /// from constructing multiple large keys at once.
+    pub fn init_with_policy(
+        &self,
+        policy: &ProverConfig,
+    ) -> Result<Arc<T::ProverKey>, ProvingError> {
+        self.init_with_policy_inner(policy, None)
+    }
+
+    /// Load a lazy key under this request's memory policy and cancellation token.
+    /// Cancellation is checked while waiting for key-build admission or the
+    /// per-key lock, and before retaining the completed key. The low-level key
+    /// reader cannot yet stop partway through a single read.
+    pub fn init_with_context(
+        &self,
+        context: &ProverContext,
+    ) -> Result<Arc<T::ProverKey>, ProvingError> {
+        self.init_with_policy_inner(&context.config, Some(context))
+    }
+
+    fn init_with_policy_inner(
+        &self,
+        policy: &ProverConfig,
+        context: Option<&ProverContext>,
+    ) -> Result<Arc<T::ProverKey>, ProvingError> {
+        check_key_cancelled(context, "prover_key.init")?;
+        // Snapshot the serialized bytes without copying them. Holding the
+        // per-key mutex across the global build-gate wait would make another
+        // request for this key uninterruptible while the builder is busy.
+        let data = {
+            let mutex = lock_with_context(&self.0, context, "prover_key.lock")?;
+            match &*mutex {
+                InnerProverKey::Uninitialized(data) => data.clone(),
+                InnerProverKey::Invalid(_) => {
+                    return Err(anyhow::anyhow!("known invalid prover key"));
+                }
+                InnerProverKey::GeneratedUnderProcessPolicy(key, keygen_policy)
+                    if !policy.map_prover_key && !keygen_policy.map_prover_key =>
+                {
+                    // Key generation only uses map_prover_key to choose the
+                    // key's coset layout. Spill, floor, directory, and MSM
+                    // settings apply during proving and may vary by request.
+                    check_key_cancelled(context, "prover_key.generated")?;
+                    return Ok(key.clone());
+                }
+                InnerProverKey::GeneratedUnderProcessPolicy(_, _) => {
+                    return Err(anyhow::anyhow!(
+                        "generated prover key cannot honor this request's memory policy; serialize and reload it under the requested policy"
+                    ));
+                }
+                InnerProverKey::Initialized(key, Some(false)) if !policy.map_prover_key => {
+                    check_key_cancelled(context, "prover_key.initialized")?;
+                    return Ok(key.clone());
+                }
+                InnerProverKey::Initialized(_, _) => {
+                    return Err(anyhow::anyhow!(
+                        "explicit memory policy requires a serialized prover key"
+                    ));
+                }
+            }
+        };
+        let hash = persistent_hash(&data[..]);
+        let cached = cached_explicit_key::<T>(&hash, policy);
+        if let Some(key) = cached {
+            check_key_cancelled(context, "prover_key.cache")?;
+            return Ok(key);
+        }
+        let _build = lock_with_context(&PK_POLICY_BUILD_LOCK, context, "prover_key.wait")?;
+        check_key_cancelled(context, "prover_key.wait")?;
+        // A prior waiter may have populated the cache while this request was
+        // waiting at the build gate.
+        let cached = cached_explicit_key::<T>(&hash, policy);
+        if let Some(key) = cached {
+            check_key_cancelled(context, "prover_key.cache")?;
+            return Ok(key);
+        }
+        // A legacy initializer can change this key's state while we wait at
+        // the global gate. Recheck under the key lock. If the key is still
+        // lazy, hold the lock through the read to preserve exclusion with
+        // legacy `init()`. Otherwise the serialized snapshot remains valid
+        // for a read under this request's policy, even if legacy `init()`
+        // installed a different layout or marked its own read invalid.
+        let mutex = lock_with_context(&self.0, context, "prover_key.lock")?;
+        let key_lock = match &*mutex {
+            InnerProverKey::Uninitialized(_) => Some(mutex),
+            InnerProverKey::Initialized(key, Some(false)) if !policy.map_prover_key => {
+                check_key_cancelled(context, "prover_key.initialized")?;
+                return Ok(key.clone());
+            }
+            InnerProverKey::Invalid(_)
+            | InnerProverKey::Initialized(_, _)
+            | InnerProverKey::GeneratedUnderProcessPolicy(_, _) => {
+                drop(mutex);
+                None
+            }
+        };
+        let key = Arc::new(T::read_raw_pk_with_policy(&data[..], policy)?);
+        drop(key_lock);
+        check_key_cancelled(context, "prover_key.read")?;
+        if policy.map_prover_key {
+            if let Ok(mut cache) = PK_POLICY_CACHE.lock() {
+                cache.retain(|entry| {
+                    entry.hash != hash
+                        || entry.type_id != TypeId::of::<T>()
+                        || entry.policy.spill_dir != policy.spill_dir
+                });
+                cache.push_front(PolicyKeyCacheEntry {
+                    hash,
+                    type_id: TypeId::of::<T>(),
+                    policy: policy.clone(),
+                    key: key.clone(),
+                });
+                cache.truncate(PK_POLICY_MAPPED_CACHE_SIZE);
+            }
+        } else if let Ok(mut cache) = PK_CACHE.lock() {
+            cache.put((hash, Some(false)), key.clone());
+        }
+        Ok(key)
+    }
+
     /// Pre-populate the process-wide `PK_CACHE` so that a subsequent
     /// `tagged_deserialize::<ProverKey<T>>` of bytes produced by
-    /// serialising **this** key returns a `ProverKey` sharing the
-    /// same `Arc<T::ProverKey>` — no rebuild and no extended-domain
-    /// FFT recomputation.
+    /// serialising **this** key can share the same `Arc<T::ProverKey>`
+    /// when its legacy `init()` is called — no rebuild and no extended-domain
+    /// FFT recomputation. Deserialization itself keeps the raw bytes so an
+    /// explicit-policy request can select a different storage policy.
     ///
     /// Designed for `Resolver::resolve_key` impls that hold an
     /// initialized `ProverKey` in process memory and feed it into
     /// the bytes-based prover pipeline. The bytes API at the prover
-    /// boundary is preserved; the consumer's `try_cache` hits the
+    /// boundary is preserved; the consumer's `init()`/`try_cache` hits the
     /// freshly-inserted entry instead of paying the multi-GiB
     /// rebuild.
     ///
@@ -1008,14 +1347,21 @@ impl<T: Zkir> ProverKey<T> {
     /// separately; until then, treat the figure above as an
     /// unreproduced observation rather than a benchmark.
     ///
-    /// Returns `Ok(true)` if the key was `Initialized` and the
-    /// cache was warmed; `Ok(false)` if the key was
-    /// `Uninitialized`/`Invalid` (nothing to share).
+    /// Returns `Ok(true)` when an initialized key was cached. A key generated
+    /// under a mapped process policy is left for a serialized reload, since
+    /// keygen's deferred layout does not yet own mapped files. Uninitialized
+    /// and invalid keys also return `Ok(false)`.
     pub fn warm_pk_cache(&self) -> std::io::Result<bool> {
-        let arc_pk = {
+        let (arc_pk, mapped_layout) = {
             let mutex = self.0.lock().expect("mutex not poisoned");
             match &*mutex {
-                InnerProverKey::Initialized(key) => key.clone(),
+                InnerProverKey::Initialized(key, mapped_layout) => (key.clone(), *mapped_layout),
+                InnerProverKey::GeneratedUnderProcessPolicy(key, keygen_policy)
+                    if !keygen_policy.map_prover_key =>
+                {
+                    (key.clone(), Some(false))
+                }
+                InnerProverKey::GeneratedUnderProcessPolicy(_, _) => return Ok(false),
                 _ => return Ok(false),
             }
         };
@@ -1024,7 +1370,7 @@ impl<T: Zkir> ProverKey<T> {
         // hash. Going through `T::write_raw_pk` is what makes that
         // exact rather than hopeful: `inner_serialize` writes an
         // `Initialized` key with the very same call, and the peer's
-        // `deserialize` hashes what it reads back. Re-implementing the
+        // `init()` hashes the bytes retained by `deserialize`. Re-implementing the
         // encoding here — as the ledger-8 version did, gzipping in this
         // crate — would leave two copies that must agree by convention,
         // and a drift between them is silent: every lookup misses and
@@ -1034,7 +1380,7 @@ impl<T: Zkir> ProverKey<T> {
 
         let hash = persistent_hash(&inner_buf);
         if let Ok(mut c) = PK_CACHE.lock() {
-            c.put(hash, arc_pk as Arc<dyn Any + Send + Sync>);
+            c.put((hash, mapped_layout), arc_pk as Arc<dyn Any + Send + Sync>);
         }
         Ok(true)
     }
@@ -1045,7 +1391,10 @@ impl<T: Zkir> ProverKey<T> {
                 writer.write_all(data)?;
                 Ok(())
             }
-            InnerProverKey::Initialized(key) => T::write_raw_pk(&mut writer, key),
+            InnerProverKey::Initialized(key, _)
+            | InnerProverKey::GeneratedUnderProcessPolicy(key, _) => {
+                T::write_raw_pk(&mut writer, key)
+            }
         }
     }
 }
@@ -1080,9 +1429,11 @@ impl<T: Zkir> Serializable for ProverKey<T> {
 impl<T: Zkir> Deserializable for ProverKey<T> {
     fn deserialize(reader: &mut impl Read, recursion_depth: u32) -> Result<Self, std::io::Error> {
         let buf = <Vec<u8> as Deserializable>::deserialize(reader, recursion_depth)?;
-        let mut pk = InnerProverKey::Uninitialized(buf);
-        pk.try_cache();
-        Ok(Self(Arc::new(Mutex::new(pk))))
+        // Keep serialized bytes until `init` selects the process cache or
+        // `init_with_policy` selects the request's storage policy.
+        Ok(Self(Arc::new(Mutex::new(InnerProverKey::Uninitialized(
+            Arc::new(buf),
+        )))))
     }
 }
 
@@ -1484,18 +1835,60 @@ impl ProofPreimage {
         params: &impl ParamsProverProvider,
         resolver: &impl Resolver,
     ) -> Result<(Proof, Vec<Option<usize>>), ProvingError> {
-        let proof_data = resolver
-            .resolve_key(self.key_location.clone())
-            .await?
-            .ok_or(anyhow::Error::msg(format!(
-                "failed to find proving key for '{}'",
-                self.key_location.0
-            )))?;
+        self.prove_inner::<Z>(rng, params, resolver, None).await
+    }
+
+    /// Prove with a request-owned memory policy and cancellation token.
+    /// Only ZKIR implementations that opt in to `Zkir::prove_with_context`
+    /// can use this entry point.
+    pub async fn prove_with_context<Z: Zkir>(
+        &self,
+        rng: impl Rng + CryptoRng,
+        params: &impl ParamsProverProvider,
+        resolver: &impl Resolver,
+        context: &ProverContext,
+    ) -> Result<(Proof, Vec<Option<usize>>), ProvingError> {
+        self.prove_inner::<Z>(rng, params, resolver, Some(context))
+            .await
+    }
+
+    async fn prove_inner<Z: Zkir>(
+        &self,
+        rng: impl Rng + CryptoRng,
+        params: &impl ParamsProverProvider,
+        resolver: &impl Resolver,
+        context: Option<&ProverContext>,
+    ) -> Result<(Proof, Vec<Option<usize>>), ProvingError> {
+        if context.is_some_and(ProverContext::is_cancelled) {
+            return Err(midnight_proofs::plonk::Error::Cancelled {
+                phase: "preimage.resolve_key",
+            }
+            .into());
+        }
+        let proof_data = resolver.resolve_key(self.key_location.clone()).await;
+        // Resolution may await remote storage. A request cancelled while it
+        // waits must stop before an error or absent key is classified, or any
+        // returned material is deserialized.
+        check_key_cancelled(context, "preimage.resolve_key")?;
+        let proof_data = proof_data?.ok_or(anyhow::Error::msg(format!(
+            "failed to find proving key for '{}'",
+            self.key_location.0
+        )))?;
         let ir = Z::load_ir_from_tagged(io::Cursor::new(&proof_data.ir_source[..]))?;
         let verifier_key = tagged_deserialize::<VerifierKey>(&mut &proof_data.verifier_key[..])?;
         let prover_key =
             Z::load_prover_key_from_tagged(io::Cursor::new(&proof_data.prover_key[..]))?;
-        let (proof, pis, pi_skips) = ir.prove(rng, params, prover_key, self).await?;
+        // The IR, verifier key and prover key are now owned. Release the
+        // resolver's serialized material before the proof retains its large
+        // working set; request-owned policy loading keeps its own key bytes.
+        drop(proof_data);
+        let (proof, pis, pi_skips) = match context {
+            Some(context) => {
+                ir.prove_with_context(rng, params, prover_key, self, context)
+                    .await?
+            }
+            None => ir.prove(rng, params, prover_key, self).await?,
+        };
         debug!("proof created; verifying to make sure");
         let k = verifier_key.force_init()?.k();
         if let Err(e) = verifier_key.verify(
