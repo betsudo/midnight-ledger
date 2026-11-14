@@ -40,3 +40,9 @@ files use `tempfile_in` and are unlinked immediately, so listing
 `MIDNIGHT_SPILL_DIR` is **not** a spill measurement. This is an observed
 peak for a process that performs setup and both proof arms in sequence;
 it does not isolate heap versus mapped RSS or establish throughput.
+
+A newer [separate-process policy smoke](policy-smoke.md) exports the same
+`k=15` artifacts once, then measures heap and mapped key loading and proving
+in separate children with a key-loaded memory checkpoint. Use its script for
+per-policy comparisons; the historical numbers above remain single-process
+observations.

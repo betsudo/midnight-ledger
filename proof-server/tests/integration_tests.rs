@@ -894,6 +894,33 @@ mod prove_endpoint {
     }
 
     #[tokio::test]
+    async fn rejects_full_queue_before_receiving_large_body() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+
+        let server = start_server_with_full_queue();
+        let mut client = tokio::net::TcpStream::connect(("127.0.0.1", server.port))
+            .await
+            .expect("connect to proof server");
+        // Send only headers. A full queue must return 429 without waiting for
+        // or allocating the declared body, even though it is much larger than
+        // the configured body limit.
+        client
+            .write_all(
+                b"POST /prove HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1073741824\r\n\r\n",
+            )
+            .await
+            .expect("send request headers");
+        let mut response = tokio::io::BufReader::new(client);
+        let mut status = String::new();
+        tokio::time::timeout(Duration::from_secs(2), response.read_line(&mut status))
+            .await
+            .expect("server must reject before body transmission")
+            .expect("read response status");
+        assert!(status.starts_with("HTTP/1.1 429 "), "{status}");
+        stop_server(server).await;
+    }
+
+    #[tokio::test]
     async fn rejects_oversized_declared_and_chunked_bodies() {
         let server = start_server_with_ingress_limits(IngressConfig {
             max_body_bytes: 32,
@@ -1001,8 +1028,9 @@ mod prove_endpoint {
             .expect("Failed to get response bytes");
         log::info!("Prove response: {} bytes", bytes.len());
 
-        let _proof: ledger::structure::ProofVersioned =
+        let proof: ledger::structure::ProofVersioned =
             tagged_deserialize(&bytes[..]).expect("Failed to deserialize proof");
+        assert!(matches!(proof, ledger::structure::ProofVersioned::V2(_)));
 
         stop_server(server).await;
     }
