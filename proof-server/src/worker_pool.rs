@@ -172,7 +172,9 @@ impl Requests {
     async fn set_status(&self, id: &Uuid, status: JobStatus) {
         if let Some(req) = self.reqs.lock().await.get_mut(id) {
             req.status = status.clone();
-            req.update_sender.send(status).await.unwrap();
+            req.update_sender
+                .try_send(status)
+                .expect("job update receiver is retained by the job");
         }
     }
 

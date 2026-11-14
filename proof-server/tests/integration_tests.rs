@@ -1028,8 +1028,9 @@ mod prove_endpoint {
             .expect("Failed to get response bytes");
         log::info!("Prove response: {} bytes", bytes.len());
 
-        let _proof: ledger::structure::ProofVersioned =
+        let proof: ledger::structure::ProofVersioned =
             tagged_deserialize(&bytes[..]).expect("Failed to deserialize proof");
+        assert!(matches!(proof, ledger::structure::ProofVersioned::V2(_)));
 
         stop_server(server).await;
     }

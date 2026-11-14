@@ -225,7 +225,7 @@ async fn prove_endpoint_accepts_v3_with_mapped_params() {
         String::from_utf8_lossy(&bytes)
     );
     let proof = tagged_deserialize::<ProofVersioned>(bytes.as_ref()).expect("deserialize proof");
-    let ProofVersioned::V2(proof) = proof else {
+    let ProofVersioned::V3(proof) = proof else {
         panic!("unexpected proof version");
     };
     let mut public_inputs = vec![42.into(), commitment];

@@ -303,6 +303,8 @@ pub(crate) async fn check(
     log_request(&request);
     let (ppi, ir): (ProofPreimageVersioned, Option<WrappedIr>) =
         tagged_deserialize(&request[..]).map_err(ErrorBadRequest)?;
+    drop(request);
+    let mut cancel_on_drop = CancelOnDrop::new(CancelToken::new());
     let (_id, updates) = pool
         .submit_and_subscribe(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
@@ -359,8 +361,11 @@ pub(crate) async fn check(
             })
         })
         .await?;
+    cancel_on_drop.track_job(pool.get_ref().clone(), _id);
     drop(permit);
-    let response = JobStatus::wait_for_success(&updates).await?;
+    let response = wait_for_proof_job(&pool, _id, &updates, &cancel_on_drop.token).await?;
+    cancel_on_drop.disarm_job();
+    drop(cancel_on_drop);
 
     Ok(HttpResponse::Ok().body(response))
 }
@@ -381,6 +386,7 @@ pub(crate) async fn prove(
         Option<ProvingKeyMaterial>,
         Option<Fr>,
     ) = tagged_deserialize(&request[..]).map_err(ErrorBadRequest)?;
+    drop(request);
 
     let data = data.map(Arc::new);
     let data_resolver = data.clone();
@@ -433,12 +439,9 @@ pub(crate) async fn prove(
                         };
 
                         let context = ProverContext::process().with_cancel(proof_cancel);
-                        let proof =
-                            versioned_ir::prove(ppi, &proving_data.ir_source, &resolver, &context)
-                                .await?
-                                .0;
-
-                        ProofVersioned::V2(proof)
+                        versioned_ir::prove(ppi, &proving_data.ir_source, &resolver, &context)
+                            .await?
+                            .0
                     }
                     // Footgun: If we add a new version, this needs to be covered here, but it's marked
                     // #[non_exhaustive], so we always need the base case.
@@ -473,6 +476,8 @@ pub(crate) async fn prove_transaction(
     log_request(&request);
     let (tx, keys): TransactionProvePayload<Signature> =
         tagged_deserialize(&request[..]).map_err(ErrorBadRequest)?;
+    drop(request);
+    let mut cancel_on_drop = CancelOnDrop::new(CancelToken::new());
     let (_id, updates) = pool
         .submit_and_subscribe(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
@@ -513,8 +518,11 @@ pub(crate) async fn prove_transaction(
             })
         })
         .await?;
+    cancel_on_drop.track_job(pool.get_ref().clone(), _id);
     drop(permit);
-    let response = JobStatus::wait_for_success(&updates).await?;
+    let response = wait_for_proof_job(&pool, _id, &updates, &cancel_on_drop.token).await?;
+    cancel_on_drop.disarm_job();
+    drop(cancel_on_drop);
     Ok(HttpResponse::Ok().body(response))
 }
 

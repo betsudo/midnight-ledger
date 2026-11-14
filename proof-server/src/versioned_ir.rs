@@ -14,12 +14,13 @@
 use std::sync::Arc;
 
 use ledger::prove::Resolver;
+use ledger::structure::ProofVersioned;
 use midnight_proofs::config::ProverContext;
 use rand::rngs::OsRng;
 #[allow(unused_imports)]
 use serialize::{peek_tag, tagged_deserialize};
 use std::io::Cursor;
-use transient_crypto::proofs::{Proof, ProofPreimage, ProvingError, Zkir};
+use transient_crypto::proofs::{ProofPreimage, ProvingError, Zkir};
 use zkir as zkir_v2;
 
 use crate::endpoints::PUBLIC_PARAMS;
@@ -87,7 +88,7 @@ pub(crate) async fn prove(
     ir_source: &[u8],
     resolver: &Resolver,
     context: &ProverContext,
-) -> Result<(Proof, Vec<Option<usize>>), WorkError> {
+) -> Result<(ProofVersioned, Vec<Option<usize>>), WorkError> {
     let tag = peek_tag(&mut std::io::Cursor::new(ir_source))
         .map_err(|e| WorkError::BadInput(e.to_string()))?;
     match tag.as_str() {
@@ -111,11 +112,12 @@ pub(crate) async fn prove(
             let skips = ppi
                 .check(&ir)
                 .map_err(|e| WorkError::BadInput(e.to_string()))?;
-            Ok((proof, skips))
+            Ok((ProofVersioned::V2(proof), skips))
         }
         "ir-source[v3-generic]" => ppi
             .prove_with_context::<zkir_v3::IrSource>(OsRng, &*PUBLIC_PARAMS, resolver, context)
             .await
+            .map(|(proof, skips)| (ProofVersioned::V3(proof), skips))
             .map_err(classify_proving_error),
         _ => Err(WorkError::BadInput(format!(
             "Unsupported ZKIR tag: '{tag}'"
