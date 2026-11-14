@@ -14,6 +14,7 @@
 use std::sync::Arc;
 
 use ledger::prove::Resolver;
+use midnight_proofs::config::ProverContext;
 use rand::rngs::OsRng;
 #[allow(unused_imports)]
 use serialize::{peek_tag, tagged_deserialize};
@@ -26,6 +27,14 @@ use crate::worker_pool::WorkError;
 use zswap::prove::ParamsLoadFailure;
 
 fn classify_proving_error(error: ProvingError) -> WorkError {
+    if error.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<midnight_proofs::plonk::Error>(),
+            Some(midnight_proofs::plonk::Error::Cancelled { .. })
+        )
+    }) {
+        return WorkError::CancelledUnexpectedly;
+    }
     let server_owned_params = error.chain().any(|cause| {
         cause.is::<ParamsLoadFailure>()
             || cause
@@ -77,6 +86,7 @@ pub(crate) async fn prove(
     ppi: Arc<ProofPreimage>,
     ir_source: &[u8],
     resolver: &Resolver,
+    context: &ProverContext,
 ) -> Result<(Proof, Vec<Option<usize>>), WorkError> {
     let tag = peek_tag(&mut std::io::Cursor::new(ir_source))
         .map_err(|e| WorkError::BadInput(e.to_string()))?;
@@ -103,12 +113,10 @@ pub(crate) async fn prove(
                 .map_err(|e| WorkError::BadInput(e.to_string()))?;
             Ok((proof, skips))
         }
-        "ir-source[v3-generic]" => {
-            //let ir_source = tagged_deserialize::<zkir_v3::IrSource>(ir_source).map_err(|e| e.to_string())?;
-            ppi.prove::<zkir_v3::IrSource>(OsRng, &*PUBLIC_PARAMS, resolver)
-                .await
-                .map_err(classify_proving_error)
-        }
+        "ir-source[v3-generic]" => ppi
+            .prove_with_context::<zkir_v3::IrSource>(OsRng, &*PUBLIC_PARAMS, resolver, context)
+            .await
+            .map_err(classify_proving_error),
         _ => Err(WorkError::BadInput(format!(
             "Unsupported ZKIR tag: '{tag}'"
         ))),
@@ -130,6 +138,15 @@ mod tests {
         assert!(matches!(
             classify_proving_error(ProvingError::msg("invalid witness")),
             WorkError::BadInput(_)
+        ));
+        assert!(matches!(
+            classify_proving_error(
+                midnight_proofs::plonk::Error::Cancelled {
+                    phase: "trace.start"
+                }
+                .into()
+            ),
+            WorkError::CancelledUnexpectedly
         ));
     }
 }

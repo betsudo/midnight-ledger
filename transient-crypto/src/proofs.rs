@@ -22,6 +22,7 @@ use lazy_static::lazy_static;
 use lru::LruCache;
 use midnight_curves::Bls12;
 use midnight_proofs::{
+    config::ProverContext,
     poly::kzg::params::{ParamsKZG, ParamsVerifierKZG},
     utils::SerdeFormat,
 };
@@ -785,6 +786,24 @@ pub trait Zkir: Any + Send + Sync + Debug + Sized {
         preimage: &ProofPreimage,
     ) -> Result<(Proof, Vec<Fr>, Vec<Option<usize>>), ProvingError>;
 
+    /// Prove with request-owned storage policy and cancellation.
+    ///
+    /// Existing IR implementations can keep the original `prove` method.
+    /// They must opt in before this entry point can be used; the default
+    /// returns an explicit error rather than ignoring the context.
+    async fn prove_with_context(
+        &self,
+        _rng: impl Rng + CryptoRng,
+        _params: &impl ParamsProverProvider,
+        _pk: ProverKey<Self>,
+        _preimage: &ProofPreimage,
+        _context: &ProverContext,
+    ) -> Result<(Proof, Vec<Fr>, Vec<Option<usize>>), ProvingError> {
+        Err(anyhow::anyhow!(
+            "explicit proof context is not supported by this ZKIR"
+        ))
+    }
+
     /// Returns the k value for this circuit
     fn k(&self) -> u8;
 
@@ -1430,6 +1449,36 @@ impl ProofPreimage {
         params: &impl ParamsProverProvider,
         resolver: &impl Resolver,
     ) -> Result<(Proof, Vec<Option<usize>>), ProvingError> {
+        self.prove_inner::<Z>(rng, params, resolver, None).await
+    }
+
+    /// Prove with a request-owned memory policy and cancellation token.
+    /// Only ZKIR implementations that opt in to `Zkir::prove_with_context`
+    /// can use this entry point.
+    pub async fn prove_with_context<Z: Zkir>(
+        &self,
+        rng: impl Rng + CryptoRng,
+        params: &impl ParamsProverProvider,
+        resolver: &impl Resolver,
+        context: &ProverContext,
+    ) -> Result<(Proof, Vec<Option<usize>>), ProvingError> {
+        self.prove_inner::<Z>(rng, params, resolver, Some(context))
+            .await
+    }
+
+    async fn prove_inner<Z: Zkir>(
+        &self,
+        rng: impl Rng + CryptoRng,
+        params: &impl ParamsProverProvider,
+        resolver: &impl Resolver,
+        context: Option<&ProverContext>,
+    ) -> Result<(Proof, Vec<Option<usize>>), ProvingError> {
+        if context.is_some_and(ProverContext::is_cancelled) {
+            return Err(midnight_proofs::plonk::Error::Cancelled {
+                phase: "preimage.resolve_key",
+            }
+            .into());
+        }
         let proof_data = resolver
             .resolve_key(self.key_location.clone())
             .await?
@@ -1441,7 +1490,13 @@ impl ProofPreimage {
         let verifier_key = tagged_deserialize::<VerifierKey>(&mut &proof_data.verifier_key[..])?;
         let prover_key =
             Z::load_prover_key_from_tagged(io::Cursor::new(&proof_data.prover_key[..]))?;
-        let (proof, pis, pi_skips) = ir.prove(rng, params, prover_key, self).await?;
+        let (proof, pis, pi_skips) = match context {
+            Some(context) => {
+                ir.prove_with_context(rng, params, prover_key, self, context)
+                    .await?
+            }
+            None => ir.prove(rng, params, prover_key, self).await?,
+        };
         debug!("proof created; verifying to make sure");
         let k = verifier_key.force_init()?.k();
         if let Err(e) = verifier_key.verify(
