@@ -64,6 +64,25 @@ pub struct MidnightDataProvider {
     pub dir: PathBuf,
 }
 
+/// A requested artifact is outside this provider's managed data set.
+///
+/// Callers can distinguish an unsupported client-selected artifact from a
+/// failure to load a known artifact owned by the server.
+#[derive(Debug)]
+pub struct UnknownManagedArtifact(pub String);
+
+impl std::fmt::Display for UnknownManagedArtifact {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "artifact '{}' is not a known managed artifact by the proof data cache.",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for UnknownManagedArtifact {}
+
 lazy_static! {
     /// The default base URL to use for the Midnight data provider.
     pub static ref BASE_URL: Url = Url::parse(&std::env::var("MIDNIGHT_PARAM_SOURCE").unwrap_or("https://srs.midnight.network/".to_owned())).expect("$MIDNIGHT_PARAM_SOURCE should be a valid URL");
@@ -253,9 +272,7 @@ impl MidnightDataProvider {
             .ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    format!(
-                        "artifact '{name}' is not a known managed artifact by the proof data cache."
-                    ),
+                    UnknownManagedArtifact(name.to_owned()),
                 )
             })?
             .1)
@@ -269,9 +286,7 @@ impl MidnightDataProvider {
             .ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    format!(
-                        "artifact '{name}' is not a known managed artifact by the proof data cache."
-                    ),
+                    UnknownManagedArtifact(name.to_owned()),
                 )
             })?
             .2)
