@@ -175,8 +175,9 @@ impl TrustedParamsDir {
 /// safe, because the obligation was discharged when the `TrustedParamsDir` was
 /// built.
 ///
-/// On a miss the call falls through to the wrapped provider, so the difference
-/// between wrapped and unwrapped is performance, never behaviour.
+/// On a miss the call falls through to the wrapped provider. A present but
+/// invalid companion fails closed so an operator can repair the cache rather
+/// than silently bypassing the invalid file.
 #[cfg(not(target_family = "wasm"))]
 pub struct MappedParams<P> {
     inner: P,
