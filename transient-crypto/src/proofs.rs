@@ -394,8 +394,8 @@ impl ParamsProver {
     /// (no second `Vec` is allocated). The first `commit_lagrange`
     /// in any subsequent prove pays one FFT to populate the cache.
     ///
-    /// Available only against the patched `midnight-proofs` fork at
-    /// `[patch.crates-io]`. Falls back to `read` if absent.
+    /// Requires the patched `midnight-proofs` fork at `[patch.crates-io]`;
+    /// callers without that source must use [`Self::read`].
     pub fn read_lazy<R: Read + Seek>(mut reader: R) -> io::Result<Self> {
         Ok(ParamsProver(Arc::new(ParamsKZG::read_custom_lazy(
             &mut reader,
@@ -546,15 +546,48 @@ impl CompanionCache {
     }
 
     /// Open the published companion for `name`, or `Ok(None)` when none is
-    /// published yet. A file that exists is complete by construction; a file
-    /// that fails validation is reported as `InvalidData`, never mapped.
+    /// published yet. Symlinks, non-regular files, and group- or world-writable
+    /// files are rejected before mapping. These checks do not replace the
+    /// caller's promise that no same-UID party mutates a published inode.
     pub fn open(&self, name: &str) -> io::Result<Option<ParamsProver>> {
         let path = self.published_path(name)?;
-        match std::fs::File::open(&path) {
-            Ok(file) => Self::map_published(&file).map(Some),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(e),
+        let metadata = match std::fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        if metadata.file_type().is_symlink() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "published companion must not be a symbolic link",
+            ));
         }
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW);
+        }
+        let file = options.open(&path)?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "published companion must be a regular file",
+            ));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if metadata.permissions().mode() & 0o022 != 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "published companion must not be group- or world-writable",
+                ));
+            }
+        }
+        Self::map_published(&file).map(Some)
     }
 
     /// Open the published companion for `name`, building and publishing it
@@ -1934,6 +1967,45 @@ mod companion_cache_tests {
         let cache = CompanionCache::from_trusted_dir(unsafe { TrustedParamsDir::new(dir.path()) });
         assert!(cache.open(NAME).expect("open").is_none());
         assert!(!cache.published_path(NAME).expect("valid name").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_companion_cannot_escape_the_trusted_directory() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().expect("trusted directory");
+        let outside = tempfile::NamedTempFile::new().expect("outside file");
+        let cache = CompanionCache::from_trusted_dir(unsafe { TrustedParamsDir::new(dir.path()) });
+        symlink(
+            outside.path(),
+            cache.published_path(NAME).expect("valid name"),
+        )
+        .expect("create symlink");
+        let error = match cache.open(NAME) {
+            Err(error) => error,
+            Ok(_) => panic!("symlink must not be mapped"),
+        };
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("symbolic link"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writable_companion_is_rejected_before_mapping() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("trusted directory");
+        let cache = CompanionCache::from_trusted_dir(unsafe { TrustedParamsDir::new(dir.path()) });
+        let path = cache.published_path(NAME).expect("valid name");
+        std::fs::write(&path, b"not a valid companion").expect("write file");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666))
+            .expect("make file writable");
+        let error = match cache.open(NAME) {
+            Err(error) => error,
+            Ok(_) => panic!("mutable file must not be mapped"),
+        };
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
     }
 
     #[test]

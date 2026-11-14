@@ -87,6 +87,9 @@ memmap2 = "0.9"
 # rename that refuses to replace an inode another mapping may hold (F-034).
 tempfile = "3.20"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 midnight-transient-crypto = { path = ".", features = ["proptest"] }
 actix-rt = "^2.10.0"
