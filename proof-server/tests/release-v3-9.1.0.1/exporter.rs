@@ -71,6 +71,7 @@ async fn export_release_v3_fixture() {
     let (proof, _) = preimage.prove::<IrSource>(ChaCha20Rng::from_seed([42; 32]), &Params(params), &keys).await.unwrap();
     keys.vk.verify(&verifier_params, &proof, [42.into()].into_iter()).unwrap();
     for (name, value) in [
+        ("preimage.bin", tagged(&preimage)),
         ("prover-key.bin", tagged(&keys.pk)),
         ("verifier-key.bin", tagged(&keys.vk)),
         ("proof.bin", tagged(&proof)),

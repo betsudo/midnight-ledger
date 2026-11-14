@@ -40,6 +40,21 @@ const PARAMS: &[u8] = include_bytes!("release-v3-9.1.0.1/params.bin");
 const PK: &[u8] = include_bytes!("release-v3-9.1.0.1/prover-key.bin");
 const VK: &[u8] = include_bytes!("release-v3-9.1.0.1/verifier-key.bin");
 const PROOF: &[u8] = include_bytes!("release-v3-9.1.0.1/proof.bin");
+const PREIMAGE: &[u8] = include_bytes!("release-v3-9.1.0.1/preimage.bin");
+
+#[test]
+#[ignore = "run after the Ledger9 ZKIR V3 WASM integration test writes a proof"]
+fn released_v3_key_verifies_wasm_proof() {
+    let path = std::env::var_os("MIDNIGHT_V3_WASM_PROOF")
+        .expect("MIDNIGHT_V3_WASM_PROOF must point to the TS/WASM proof");
+    let bytes = std::fs::read(path).expect("read TS/WASM proof");
+    let proof: Proof = tagged_deserialize(bytes.as_slice()).expect("deserialize TS/WASM proof");
+    let vk: VerifierKey = tagged_deserialize(VK).expect("released V3 verifier key");
+    let params = ParamsVerifier::read(PARAMS).expect("released verifier parameters");
+    vk.verify(&params, &proof, [42.into()].into_iter())
+        .expect("released verifier key accepts TS/WASM proof");
+    assert!(vk.verify(&params, &proof, [43.into()].into_iter()).is_err());
+}
 
 #[test]
 fn released_v3_proof_cannot_use_v2_contract_route() {
@@ -144,6 +159,7 @@ async fn released_v3_proof_and_key_remain_usable() {
         public_transcript_outputs: vec![],
         key_location: KeyLocation(Cow::Borrowed("release-v3")),
     };
+    assert_eq!(tagged(&preimage), PREIMAGE, "released preimage wire bytes");
     let (bench_arm, repetitions) = benchmark_arm();
     let mut heap_proof = None;
     if bench_arm != Some("mapped") {
