@@ -54,6 +54,23 @@ pub struct Resolver {
     pub external_resolver: ExternalResolver,
 }
 
+/// Marks I/O from fixed, server-owned Zswap or Dust key stores. External key
+/// resolver errors are left unmarked because their provenance is caller-owned.
+#[derive(Debug)]
+pub struct BuiltinKeyLoadFailure(pub io::Error);
+
+impl std::fmt::Display for BuiltinKeyLoadFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "built-in proving key: {}", self.0)
+    }
+}
+
+impl std::error::Error for BuiltinKeyLoadFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
 impl Resolver {
     #[allow(clippy::type_complexity)]
     pub fn new(
@@ -77,10 +94,20 @@ impl ParamsProverProvider for Resolver {
 
 impl transient_crypto::proofs::Resolver for Resolver {
     async fn resolve_key(&self, key: KeyLocation) -> io::Result<Option<ProvingKeyMaterial>> {
-        if let Some(res) = self.zswap_resolver.resolve_key(key.clone()).await? {
+        if let Some(res) = self
+            .zswap_resolver
+            .resolve_key(key.clone())
+            .await
+            .map_err(|error| io::Error::new(error.kind(), BuiltinKeyLoadFailure(error)))?
+        {
             return Ok(Some(res));
         }
-        if let Some(res) = self.dust_resolver.resolve_key(key.clone()).await? {
+        if let Some(res) = self
+            .dust_resolver
+            .resolve_key(key.clone())
+            .await
+            .map_err(|error| io::Error::new(error.kind(), BuiltinKeyLoadFailure(error)))?
+        {
             return Ok(Some(res));
         }
         (self.external_resolver)(key.clone()).await

@@ -221,7 +221,9 @@ export const prove = async (
 };
 
 export const startProofServer = () => {
-  return startProofServerBinary();
+  // These proving suites exercise concurrent jobs, while the server's
+  // production default admits only two request bodies at a time.
+  return startProofServerBinary(undefined, ' -v --max-ingress 32');
 };
 
 export const stopProofServer = () => {
