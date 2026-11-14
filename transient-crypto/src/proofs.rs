@@ -21,6 +21,8 @@ use derive_where::derive_where;
 use lazy_static::lazy_static;
 use lru::LruCache;
 use midnight_curves::Bls12;
+#[cfg(not(target_family = "wasm"))]
+use midnight_proofs::poly::commitment::Params as _;
 use midnight_proofs::{
     config::{ProverConfig, ProverContext},
     poly::kzg::params::{ParamsKZG, ParamsVerifierKZG},
@@ -200,6 +202,16 @@ impl<P> MappedParams<P> {
     pub fn inner(&self) -> &P {
         &self.inner
     }
+
+    fn require_k(mapped: ParamsProver, k: u8) -> io::Result<ParamsProver> {
+        if mapped.0.max_k() != u32::from(k) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("mapped parameters for k={k} have k={}", mapped.0.max_k()),
+            ));
+        }
+        Ok(mapped)
+    }
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -213,7 +225,7 @@ impl<P: ParamsProverProvider> ParamsProverProvider for MappedParams<P> {
         // eviction under memory pressure.
         if let Some(mapped) = cache.open(&name)? {
             tracing::info!(target: "midnight_bench", stage = "load_mmap", k = k as u64);
-            return Ok(mapped);
+            return Self::require_k(mapped, k);
         }
 
         // Build one on first miss, opt-in via `MIDNIGHT_MMAP_BUILD=1`: the
@@ -224,7 +236,7 @@ impl<P: ParamsProverProvider> ParamsProverProvider for MappedParams<P> {
         if ParamsLoadPolicy::process().build_mmap_companion {
             tracing::info!(target: "midnight_bench", stage = "build_mmap_companion", k = k as u64);
             let eager = self.inner.get_params(k).await?;
-            return cache.open_or_build(&name, || Ok(eager));
+            return Self::require_k(cache.open_or_build(&name, || Ok(eager))?, k);
         }
 
         self.inner.get_params(k).await
@@ -1954,6 +1966,14 @@ mod companion_cache_tests {
         )))
     }
 
+    struct NeverLoad;
+
+    impl ParamsProverProvider for NeverLoad {
+        async fn get_params(&self, _: u8) -> io::Result<ParamsProver> {
+            panic!("a present but invalid companion must not fall back to the provider")
+        }
+    }
+
     fn digest(p: &ParamsProver) -> Vec<u8> {
         let mut bytes = Vec::new();
         p.0.write_custom(&mut bytes, SerdeFormat::RawBytesUnchecked)
@@ -2032,6 +2052,24 @@ mod companion_cache_tests {
             Ok(_) => panic!("FIFO must not be mapped"),
         };
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn companion_under_the_wrong_k_name_is_rejected() {
+        let dir = tempfile::tempdir().expect("trusted directory");
+        let trusted = unsafe { TrustedParamsDir::new(dir.path()) };
+        let cache = CompanionCache::from_trusted_dir(trusted.clone());
+        let wrong_name = base_crypto::data_provider::MidnightDataProvider::name_k(5);
+        cache
+            .open_or_build(&wrong_name, || Ok(small_params()))
+            .expect("publish valid k=4 companion under a k=5 name");
+        let provider = MappedParams::new(NeverLoad, trusted);
+        let error = match futures::executor::block_on(provider.get_params(5)) {
+            Err(error) => error,
+            Ok(_) => panic!("wrong-k companion must be rejected"),
+        };
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("k=4"));
     }
 
     #[test]

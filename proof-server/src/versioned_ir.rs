@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use base_crypto::data_provider::UnknownManagedArtifact;
 use ledger::error::TransactionProvingError;
-use ledger::prove::Resolver;
+use ledger::prove::{BuiltinKeyLoadFailure, Resolver};
 use ledger::structure::ProofVersioned;
 use midnight_proofs::config::ProverContext;
 use rand::rngs::OsRng;
@@ -31,6 +31,16 @@ use storage::db::DB;
 use zswap::prove::ParamsLoadFailure;
 
 fn classify_proving_error(error: ProvingError) -> WorkError {
+    fn is_builtin_key_failure(cause: &(dyn std::error::Error + 'static)) -> bool {
+        if cause.is::<BuiltinKeyLoadFailure>() {
+            return true;
+        }
+        cause
+            .downcast_ref::<std::io::Error>()
+            .and_then(std::io::Error::get_ref)
+            .is_some_and(|inner| is_builtin_key_failure(inner))
+    }
+
     fn is_unknown_managed_artifact(cause: &(dyn std::error::Error + 'static)) -> bool {
         if cause.is::<UnknownManagedArtifact>() {
             return true;
@@ -55,6 +65,9 @@ fn classify_proving_error(error: ProvingError) -> WorkError {
         return WorkError::CancelledUnexpectedly;
     }
 
+    if error.chain().any(is_builtin_key_failure) {
+        return WorkError::InternalError(error.to_string());
+    }
     if error.chain().any(is_unknown_managed_artifact) {
         return WorkError::BadInput(error.to_string());
     }
@@ -266,6 +279,20 @@ mod tests {
                 marked()
             )),
             WorkError::InternalError(_)
+        ));
+        let source = std::io::Error::new(std::io::ErrorKind::InvalidData, "corrupt built-in key");
+        let marked_key = std::io::Error::new(source.kind(), BuiltinKeyLoadFailure(source));
+        assert!(matches!(
+            classify_transaction_proving_error::<InMemoryDB>(TransactionProvingError::Tokio(
+                marked_key
+            )),
+            WorkError::InternalError(_)
+        ));
+        assert!(matches!(
+            classify_transaction_proving_error::<InMemoryDB>(TransactionProvingError::Tokio(
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid supplied key tag")
+            )),
+            WorkError::BadInput(_)
         ));
         assert!(matches!(
             classify_transaction_proving_error::<InMemoryDB>(
