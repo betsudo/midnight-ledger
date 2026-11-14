@@ -13,7 +13,9 @@
 
 use std::sync::Arc;
 
+use ledger::error::TransactionProvingError;
 use ledger::prove::Resolver;
+use ledger::structure::ProofVersioned;
 use rand::rngs::OsRng;
 #[allow(unused_imports)]
 use serialize::{peek_tag, tagged_deserialize};
@@ -23,6 +25,7 @@ use zkir as zkir_v2;
 
 use crate::endpoints::PUBLIC_PARAMS;
 use crate::worker_pool::WorkError;
+use storage::db::DB;
 use zswap::prove::ParamsLoadFailure;
 
 fn classify_proving_error(error: ProvingError) -> WorkError {
@@ -37,6 +40,33 @@ fn classify_proving_error(error: ProvingError) -> WorkError {
         WorkError::InternalError(error.to_string())
     } else {
         WorkError::BadInput(error.to_string())
+    }
+}
+
+/// TransactionProvingError does not expose its Proving variant as an Error
+/// source, so inspect the variant before the parameter provenance is erased.
+pub(crate) fn classify_transaction_proving_error<D: DB>(
+    error: TransactionProvingError<D>,
+) -> WorkError {
+    match error {
+        TransactionProvingError::Proving(error) => classify_proving_error(error),
+        TransactionProvingError::Tokio(error) => classify_proving_error(error.into()),
+        other => WorkError::BadInput(other.to_string()),
+    }
+}
+
+/// Ledger's proof wire version follows the verifier-key format, not the IR tag.
+pub(crate) fn proof_envelope_for_vk(
+    verifier_key: &[u8],
+) -> Result<fn(Proof) -> ProofVersioned, WorkError> {
+    let tag =
+        peek_tag(&mut Cursor::new(verifier_key)).map_err(|e| WorkError::BadInput(e.to_string()))?;
+    match tag.as_str() {
+        "verifier-key[v6]" => Ok(ProofVersioned::V2),
+        "verifier-key[v7]" => Ok(ProofVersioned::V3),
+        _ => Err(WorkError::BadInput(format!(
+            "Unsupported verifier key tag: '{tag}'"
+        ))),
     }
 }
 
@@ -118,6 +148,22 @@ pub(crate) async fn prove(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use storage::db::InMemoryDB;
+
+    #[test]
+    fn released_v2_and_v3_keys_use_the_current_proof_envelope() {
+        for key in [
+            include_bytes!("../tests/release-v2-9.1.0.1/verifier-key.bin").as_slice(),
+            include_bytes!("../tests/release-v3-9.1.0.1/verifier-key.bin").as_slice(),
+        ] {
+            let wrap = proof_envelope_for_vk(key).expect("released verifier key version");
+            assert!(matches!(wrap(Proof(Vec::new())), ProofVersioned::V3(_)));
+        }
+        assert!(matches!(
+            proof_envelope_for_vk(&[]),
+            Err(WorkError::BadInput(_))
+        ));
+    }
 
     #[test]
     fn parameter_io_failure_survives_proving_error_erasure() {
@@ -129,6 +175,34 @@ mod tests {
         ));
         assert!(matches!(
             classify_proving_error(ProvingError::msg("invalid witness")),
+            WorkError::BadInput(_)
+        ));
+    }
+
+    #[test]
+    fn transaction_proving_retains_parameter_error_provenance() {
+        let marked = || {
+            let source = std::io::Error::new(std::io::ErrorKind::InvalidData, "corrupt companion");
+            std::io::Error::new(source.kind(), ParamsLoadFailure(source))
+        };
+        assert!(matches!(
+            classify_transaction_proving_error::<InMemoryDB>(TransactionProvingError::Proving(
+                marked().into()
+            )),
+            WorkError::InternalError(_)
+        ));
+        assert!(matches!(
+            classify_transaction_proving_error::<InMemoryDB>(TransactionProvingError::Tokio(
+                marked()
+            )),
+            WorkError::InternalError(_)
+        ));
+        assert!(matches!(
+            classify_transaction_proving_error::<InMemoryDB>(
+                TransactionProvingError::MissingKeyset(transient_crypto::proofs::KeyLocation(
+                    "missing".into()
+                ))
+            ),
             WorkError::BadInput(_)
         ));
     }

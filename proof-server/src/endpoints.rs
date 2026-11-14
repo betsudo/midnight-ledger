@@ -372,11 +372,12 @@ pub(crate) async fn prove(
                             ),
                         };
 
+                        let wrap = versioned_ir::proof_envelope_for_vk(&proving_data.verifier_key)?;
                         let proof = versioned_ir::prove(ppi, &proving_data.ir_source, &resolver)
                             .await?
                             .0;
 
-                        ProofVersioned::V2(proof)
+                        wrap(proof)
                     }
                     // Footgun: If we add a new version, this needs to be covered here, but it's marked
                     // #[non_exhaustive], so we always need the base case.
@@ -440,7 +441,7 @@ pub(crate) async fn prove_transaction(
                 tagged_serialize(
                     &tx.prove(provider, &INITIAL_TRANSACTION_COST_MODEL.runtime_cost_model)
                         .await
-                        .map_err(|e| WorkError::BadInput(e.to_string()))?,
+                        .map_err(versioned_ir::classify_transaction_proving_error)?,
                     &mut response,
                 )
                 .map_err(|e| WorkError::InternalError(e.to_string()))?;
