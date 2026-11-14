@@ -245,6 +245,7 @@ pub(crate) async fn check(
     log_request(&request);
     let (ppi, ir): (ProofPreimageVersioned, Option<WrappedIr>) =
         tagged_deserialize(&request[..]).map_err(ErrorBadRequest)?;
+    drop(request);
     let (_id, updates) = pool
         .submit_and_subscribe(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
@@ -323,6 +324,7 @@ pub(crate) async fn prove(
         Option<ProvingKeyMaterial>,
         Option<Fr>,
     ) = tagged_deserialize(&request[..]).map_err(ErrorBadRequest)?;
+    drop(request);
 
     let data = data.map(Arc::new);
     let data_resolver = data.clone();
@@ -409,6 +411,7 @@ pub(crate) async fn prove_transaction(
     log_request(&request);
     let (tx, keys): TransactionProvePayload<Signature> =
         tagged_deserialize(&request[..]).map_err(ErrorBadRequest)?;
+    drop(request);
     let (_id, updates) = pool
         .submit_and_subscribe(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
