@@ -557,12 +557,20 @@ impl CompanionCache {
                 "published companion must not be a symbolic link",
             ));
         }
+        if !metadata.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "published companion must be a regular file",
+            ));
+        }
         let mut options = std::fs::OpenOptions::new();
         options.read(true);
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;
-            options.custom_flags(libc::O_NOFOLLOW);
+            // O_NONBLOCK also prevents a swapped-in FIFO from hanging a worker
+            // between the metadata check and open. It is inert on regular files.
+            options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
         }
         let file = options.open(&path)?;
         let metadata = file.metadata()?;
@@ -1615,6 +1623,23 @@ mod companion_cache_tests {
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn fifo_companion_is_rejected_without_blocking() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let dir = tempfile::tempdir().expect("trusted directory");
+        let cache = CompanionCache::from_trusted_dir(unsafe { TrustedParamsDir::new(dir.path()) });
+        let path = cache.published_path(NAME).expect("valid name");
+        let path_bytes = std::ffi::CString::new(path.as_os_str().as_bytes()).expect("valid path");
+        assert_eq!(unsafe { libc::mkfifo(path_bytes.as_ptr(), 0o600) }, 0);
+        let error = match cache.open(NAME) {
+            Err(error) => error,
+            Ok(_) => panic!("FIFO must not be mapped"),
+        };
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
     #[test]
     fn concurrent_first_builders_share_one_complete_publication() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1715,7 +1740,8 @@ mod companion_cache_tests {
                     // Spin until the name appears; every success must be a
                     // complete, validated file — `open` never returns a
                     // partial one because the name is created by the rename.
-                    for _ in 0..10_000 {
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                    while std::time::Instant::now() < deadline {
                         match cache.open(NAME) {
                             Ok(Some(p)) => return Ok(p),
                             Ok(None) => std::thread::yield_now(),
