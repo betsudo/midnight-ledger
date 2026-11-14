@@ -159,7 +159,8 @@ pub(crate) async fn prove(
 }
 
 /// Ledger's wire proof version follows the verifier-key format, not the IR tag.
-/// The released in-tree ZKIR V2 fixture already uses verifier-key[v7].
+/// The released in-tree ZKIR V2 fixture uses verifier-key[v7], while the
+/// bundled zswap verifier key uses v6; the IR tag alone cannot select it.
 pub(crate) fn proof_envelope_for_vk(
     verifier_key: &[u8],
 ) -> Result<fn(Proof) -> ProofVersioned, WorkError> {

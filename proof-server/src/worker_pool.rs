@@ -178,9 +178,18 @@ impl Requests {
         }
     }
 
+    #[cfg(test)]
     async fn new_req(
         &self,
         work: Work,
+    ) -> Result<(Uuid, Arc<Receiver<JobStatus>>), WorkerPoolError> {
+        self.new_req_with_send(work, |_| Ok(())).await
+    }
+
+    async fn new_req_with_send(
+        &self,
+        work: Work,
+        send: impl FnOnce(Uuid) -> Result<(), WorkerPoolError>,
     ) -> Result<(Uuid, Arc<Receiver<JobStatus>>), WorkerPoolError> {
         // Capacity admission must be one atomic operation. With the previous
         // `is_full().await` followed by a second lock for `insert`, a burst of
@@ -198,6 +207,12 @@ impl Requests {
         let updates = req.updates();
         let id = Uuid::new_v4();
         reqs.insert(id, req);
+        // Send while the admission lock is held. There is no await between
+        // inserting and registering work, even when the channel is closed.
+        if let Err(error) = send(id) {
+            reqs.remove(&id);
+            return Err(error);
+        }
         Ok((id, updates))
     }
 
@@ -240,10 +255,6 @@ impl Requests {
 
     async fn get(&self, id: Uuid) -> Option<Job> {
         self.reqs.lock().await.get(&id).cloned()
-    }
-
-    async fn remove(&self, id: Uuid) -> Option<Job> {
-        self.reqs.lock().await.remove(&id)
     }
 
     async fn gc(&self) {
@@ -353,16 +364,13 @@ impl WorkerPool {
         &self,
         work: Work,
     ) -> Result<(Uuid, Arc<Receiver<JobStatus>>), WorkerPoolError> {
-        let (id, updates) = self.requests.new_req(work).await?;
-        // The channel is unbounded. Enqueue and return the subscription without
-        // another await on successful admission, so a dropped HTTP handler cannot
-        // leave a job inserted but not yet registered with its cancellation
-        // guard.
-        if self.sender.try_send(WorkItem { id }).is_err() {
-            drop(self.requests.remove(id).await);
-            return Err(WorkerPoolError::ChannelClosed);
-        }
-        Ok((id, updates))
+        self.requests
+            .new_req_with_send(work, |id| {
+                self.sender
+                    .try_send(WorkItem { id })
+                    .map_err(|_| WorkerPoolError::ChannelClosed)
+            })
+            .await
     }
 
     /// Submits a work item to the pool
