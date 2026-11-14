@@ -10,15 +10,24 @@ use std::{
 };
 
 use base_crypto::data_provider::MidnightDataProvider;
+use base_crypto::hash::HashOutput;
+use coin_structure::contract::ContractAddress;
+use ledger::{
+    error::MalformedTransaction,
+    structure::{ContractCall, ProofKind, ProofMarker, ProofVersioned},
+    verify::ProofVerificationMode,
+};
 use midnight_curves::Bls12;
 use midnight_proofs::{
     config::{ProverConfig, ProverContext},
     poly::kzg::params::ParamsKZG,
     utils::SerdeFormat,
 };
+use onchain_runtime::state::{ContractOperation, EntryPointBuf};
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use serialize::{tagged_deserialize, tagged_serialize};
+use storage::db::InMemoryDB;
 use transient_crypto::proofs::{
     CompanionCache, KeyLocation, MappedParams, ParamsProver, ParamsProverProvider, ParamsVerifier,
     Proof, ProofPreimage, ProverKey, ProvingKeyMaterial, Resolver, TrustedParamsDir, VerifierKey,
@@ -31,6 +40,43 @@ const PARAMS: &[u8] = include_bytes!("release-v3-9.1.0.1/params.bin");
 const PK: &[u8] = include_bytes!("release-v3-9.1.0.1/prover-key.bin");
 const VK: &[u8] = include_bytes!("release-v3-9.1.0.1/verifier-key.bin");
 const PROOF: &[u8] = include_bytes!("release-v3-9.1.0.1/proof.bin");
+
+#[test]
+fn released_v3_proof_cannot_use_v2_contract_route() {
+    let proof: Proof = tagged_deserialize(PROOF).expect("released V3 proof");
+    let vk: VerifierKey = tagged_deserialize(VK).expect("released V3 verifier key");
+    let v3_wire = tagged(&ProofVersioned::V3(proof.clone()));
+    let v3_decoded: ProofVersioned =
+        tagged_deserialize(v3_wire.as_slice()).expect("V3 proof envelope");
+    assert!(matches!(v3_decoded, ProofVersioned::V3(_)));
+    let operation = ContractOperation::new(Some(vk), None);
+    let call = ContractCall::<ProofMarker, InMemoryDB> {
+        address: ContractAddress(HashOutput([0; 32])),
+        entry_point: EntryPointBuf(b"release-v3".to_vec()),
+        guaranteed_transcript: None,
+        fallible_transcript: None,
+        communication_commitment: 0.into(),
+        proof: ProofVersioned::V2(proof),
+    };
+
+    let wire = tagged(&call.proof);
+    assert_ne!(wire, v3_wire, "V2 and V3 proof envelopes must differ");
+    let decoded: ProofVersioned = tagged_deserialize(wire.as_slice()).expect("proof envelope");
+    assert!(matches!(decoded, ProofVersioned::V2(_)));
+    let error = <ProofMarker as ProofKind<InMemoryDB>>::proof_verify(
+        &operation,
+        &decoded,
+        vec![42.into()],
+        &call,
+        ProofVerificationMode::Real,
+    )
+    .expect_err("V2 envelope must not use the V3 verifier key");
+    assert!(matches!(
+        error,
+        MalformedTransaction::VerifierKeyNotPresent { address, operation }
+            if address == call.address && operation == call.entry_point
+    ));
+}
 
 struct ReleaseParams(ParamsProver);
 
