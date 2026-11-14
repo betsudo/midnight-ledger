@@ -19,17 +19,53 @@ use rand::{CryptoRng, Rng};
 use serialize::{Deserializable, tagged_deserialize, tagged_serialize};
 use std::fs::File;
 use std::future::Future;
-use std::io::{BufReader, Read};
+use std::io::{self, BufReader, Read};
 use std::sync::Arc;
 use storage::db::DB;
 use transient_crypto::proofs::{
     KeyLocation, ParamsProverProvider, Proof, ProofPreimage, ProverKey, ProvingError, Resolver,
     VerifierKey,
 };
+#[cfg(not(target_family = "wasm"))]
+use transient_crypto::proofs::{MappedParams, TrustedParamsDir};
 use transient_crypto::proofs::{ParamsProver, ProvingKeyMaterial, ProvingProvider};
+
+#[cfg(not(target_family = "wasm"))]
+static MAPPED_PARAMS_DIR: std::sync::OnceLock<TrustedParamsDir> = std::sync::OnceLock::new();
+
+/// Marks a parameter load failure as server-owned when it crosses the
+/// `Zkir::prove` interface, which otherwise erases its IO provenance.
+#[derive(Debug)]
+pub struct ParamsLoadFailure(pub io::Error);
+
+impl std::fmt::Display for ParamsLoadFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "prover parameters: {}", self.0)
+    }
+}
+
+impl std::error::Error for ParamsLoadFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
 
 #[derive(Clone)]
 pub struct ZswapResolver(pub MidnightDataProvider);
+
+impl ZswapResolver {
+    /// Opt the process into a trusted, immutable mmap companion directory.
+    /// Call during startup, before serving proof requests. All resolver
+    /// instances in the process use the same universal SRS files by `k`.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn configure_mapped_params_dir(dir: TrustedParamsDir) -> Result<(), TrustedParamsDir> {
+        MAPPED_PARAMS_DIR.set(dir)
+    }
+
+    fn params_error(error: io::Error) -> io::Error {
+        io::Error::new(error.kind(), ParamsLoadFailure(error))
+    }
+}
 
 impl Resolver for ZswapResolver {
     async fn resolve_key(&self, key: KeyLocation) -> std::io::Result<Option<ProvingKeyMaterial>> {
@@ -84,7 +120,14 @@ impl Resolver for ZswapResolver {
 
 impl ParamsProverProvider for ZswapResolver {
     async fn get_params(&self, k: u8) -> std::io::Result<ParamsProver> {
-        self.0.get_params(k).await
+        #[cfg(not(target_family = "wasm"))]
+        if let Some(dir) = MAPPED_PARAMS_DIR.get() {
+            return MappedParams::new(self.0.clone(), dir.clone())
+                .get_params(k)
+                .await
+                .map_err(Self::params_error);
+        }
+        self.0.get_params(k).await.map_err(Self::params_error)
     }
 }
 

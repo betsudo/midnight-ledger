@@ -65,6 +65,9 @@ panic = "abort"
 # present in consumer builds is fine, as they don't/shouldn't *want* the local
 # packages.
 [patch.crates-io]
+# The released Ledger9 proof line is 0.8.2. Pin the reviewed mmap/spill
+# branch by commit so checkout branch changes cannot silently drop the patch.
+midnight-proofs = { git = "https://github.com/betsudo/midnight-zk", rev = "397b2424b972b3ec338722839c109f01c2fcf9f1" }
 midnight-base-crypto = { path = "base-crypto" }
 midnight-serialize = { path = "serialize" }
 # midnight-zkir v3 asks crates.io for transient-crypto ^3.0.0; resolve it to
