@@ -1822,6 +1822,10 @@ impl ProofPreimage {
         let verifier_key = tagged_deserialize::<VerifierKey>(&mut &proof_data.verifier_key[..])?;
         let prover_key =
             Z::load_prover_key_from_tagged(io::Cursor::new(&proof_data.prover_key[..]))?;
+        // The IR, verifier key and prover key are now owned. Release the
+        // resolver's serialized material before the proof retains its large
+        // working set; request-owned policy loading keeps its own key bytes.
+        drop(proof_data);
         let (proof, pis, pi_skips) = match context {
             Some(context) => {
                 ir.prove_with_context(rng, params, prover_key, self, context)
