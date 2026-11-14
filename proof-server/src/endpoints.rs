@@ -513,7 +513,7 @@ pub(crate) async fn prove_transaction(
                 tagged_serialize(
                     &tx.prove(provider, &INITIAL_TRANSACTION_COST_MODEL.runtime_cost_model)
                         .await
-                        .map_err(|e| WorkError::BadInput(e.to_string()))?,
+                        .map_err(versioned_ir::classify_transaction_proving_error)?,
                     &mut response,
                 )
                 .map_err(|e| WorkError::InternalError(e.to_string()))?;
