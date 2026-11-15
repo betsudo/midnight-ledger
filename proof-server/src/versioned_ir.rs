@@ -45,8 +45,7 @@ fn classify_proving_error(error: ProvingError) -> WorkError {
                 })
     });
     if server_owned_storage {
-        tracing::error!(error = ?error, "server-owned proving storage failed");
-        WorkError::InternalError("server-owned proving storage failed".to_owned())
+        WorkError::ServerEnvironment(format!("{error:#}"))
     } else {
         WorkError::BadInput(error.to_string())
     }
@@ -218,26 +217,40 @@ mod tests {
         let mut mapped = ProverConfig::mapped_key_and_cosets();
         mapped.coset_spill_floor_k = 0;
         mapped.spill_dir = Some(root.path().join("missing"));
-        assert!(matches!(
-            prove_v3(&preimage, &params, &resolver, Some(&mapped))
-                .await
-                .expect_err("mapped policy must reach unavailable storage"),
-            WorkError::InternalError(_)
-        ));
+        let storage_failure = prove_v3(&preimage, &params, &resolver, Some(&mapped))
+            .await
+            .expect_err("mapped policy must reach unavailable storage");
+        assert!(matches!(storage_failure, WorkError::ServerEnvironment(_)));
+        let storage_response: actix_web::Error = storage_failure.into();
+        assert_eq!(
+            storage_response.as_response_error().status_code(),
+            actix_web::http::StatusCode::INTERNAL_SERVER_ERROR
+        );
+        let body = actix_web::body::to_bytes(storage_response.error_response().into_body())
+            .await
+            .expect("server environment response body");
+        assert!(
+            std::str::from_utf8(&body)
+                .expect("UTF-8 response")
+                .contains("missing")
+        );
 
         let mut malformed = resolver.0.clone();
         malformed.prover_key.truncate(1);
-        assert!(matches!(
-            prove_v3(
-                &preimage,
-                &params,
-                &FixtureResolver(malformed),
-                Some(&mapped)
-            )
-            .await
-            .expect_err("malformed supplied key must fail"),
-            WorkError::BadInput(_)
-        ));
+        let bad_key_failure = prove_v3(
+            &preimage,
+            &params,
+            &FixtureResolver(malformed),
+            Some(&mapped),
+        )
+        .await
+        .expect_err("malformed supplied key must fail");
+        assert!(matches!(bad_key_failure, WorkError::BadInput(_)));
+        let bad_key_response: actix_web::Error = bad_key_failure.into();
+        assert_eq!(
+            bad_key_response.as_response_error().status_code(),
+            actix_web::http::StatusCode::BAD_REQUEST
+        );
     }
 
     #[test]
@@ -246,17 +259,17 @@ mod tests {
         let marked = std::io::Error::new(source.kind(), ParamsLoadFailure(source));
         assert!(matches!(
             classify_proving_error(marked.into()),
-            WorkError::InternalError(_)
+            WorkError::ServerEnvironment(_)
         ));
         assert!(matches!(
             classify_proving_error(ProvingError::msg("invalid witness")),
             WorkError::BadInput(_)
         ));
-        assert_eq!(
+        assert!(matches!(
             classify_proving_error(
                 ProveWithPolicyError::Storage(std::io::Error::other("private volume path")).into()
             ),
-            WorkError::InternalError("server-owned proving storage failed".to_owned())
-        );
+            WorkError::ServerEnvironment(message) if message.contains("private volume path")
+        ));
     }
 }

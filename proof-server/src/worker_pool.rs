@@ -40,6 +40,10 @@ pub enum WorkError {
     BadInput(String),
     #[error("internal error")]
     InternalError(String),
+    /// An operator-owned parameter cache or temporary proving volume failed.
+    /// The response names the failing operation for server diagnostics.
+    #[error("server environment: {0}")]
+    ServerEnvironment(String),
     #[error("work cancelled unexpectedly")]
     CancelledUnexpectedly,
     #[error("task join error")]
@@ -51,6 +55,7 @@ impl From<WorkError> for actix_web::Error {
         match val {
             e @ WorkError::BadInput(_) => ErrorBadRequest(e),
             e @ WorkError::InternalError(_) => ErrorInternalServerError(e),
+            e @ WorkError::ServerEnvironment(_) => ErrorInternalServerError(e),
             e @ WorkError::CancelledUnexpectedly => ErrorInternalServerError(e),
             e @ WorkError::JoinError => ErrorInternalServerError(e),
         }
