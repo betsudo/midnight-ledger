@@ -3268,7 +3268,7 @@ dependencies = [
 [[package]]
 name = "midnight-curves"
 version = "0.3.1"
-source = "git+https://github.com/betsudo/midnight-zk?rev=cdbbce716930578d15a4adc7ed070712f81e314f#cdbbce716930578d15a4adc7ed070712f81e314f"
+source = "git+https://github.com/betsudo/midnight-zk?rev=6529eaa4e689bb824bd1a4ca6c543cd64f6eb817#6529eaa4e689bb824bd1a4ca6c543cd64f6eb817"
 dependencies = [
  "bitvec",
  "blst",
@@ -3545,7 +3545,7 @@ dependencies = [
 [[package]]
 name = "midnight-proofs"
 version = "0.8.2"
-source = "git+https://github.com/betsudo/midnight-zk?rev=cdbbce716930578d15a4adc7ed070712f81e314f#cdbbce716930578d15a4adc7ed070712f81e314f"
+source = "git+https://github.com/betsudo/midnight-zk?rev=6529eaa4e689bb824bd1a4ca6c543cd64f6eb817#6529eaa4e689bb824bd1a4ca6c543cd64f6eb817"
 dependencies = [
  "blake2b_simd",
  "criterion 0.7.0",
@@ -3827,7 +3827,7 @@ dependencies = [
 [[package]]
 name = "midnight-zk-stdlib"
 version = "2.4.0"
-source = "git+https://github.com/betsudo/midnight-zk?rev=cdbbce716930578d15a4adc7ed070712f81e314f#cdbbce716930578d15a4adc7ed070712f81e314f"
+source = "git+https://github.com/betsudo/midnight-zk?rev=6529eaa4e689bb824bd1a4ca6c543cd64f6eb817#6529eaa4e689bb824bd1a4ca6c543cd64f6eb817"
 dependencies = [
  "base64 0.13.1",
  "bincode 2.0.1",
@@ -3893,7 +3893,7 @@ dependencies = [
 [[package]]
 name = "midnight-zkir"
 version = "3.2.1"
-source = "git+https://github.com/betsudo/midnight-zkir?rev=734bb98270922931cb4b3501361c7453f197e4bf#734bb98270922931cb4b3501361c7453f197e4bf"
+source = "git+https://github.com/betsudo/midnight-zkir?rev=7d89518cea395d83802693e33ff99faf1f0902b1#7d89518cea395d83802693e33ff99faf1f0902b1"
 dependencies = [
  "anyhow",
  "const-hex",
