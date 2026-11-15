@@ -184,6 +184,7 @@ impl<T: Zkir> ProverKey<T> {
         context: Option<&ProverContext>,
     ) -> Result<Arc<T::ProverKey>, ProvingError> {
         check_key_cancelled(context, "prover_key.init")?;
+        policy.ensure_supported()?;
         // Snapshot the serialized bytes without copying them. Holding the
         // per-key mutex across the global build-gate wait would make another
         // request for this key uninterruptible while the builder is busy.
@@ -195,10 +196,9 @@ impl<T: Zkir> ProverKey<T> {
                     return Err(anyhow::anyhow!("known invalid prover key"));
                 }
                 InnerProverKey::Initialized(key) => {
-                    // No load occurs for an already initialized key. The heap
-                    // policy can reuse it, but a mapped request must start
-                    // from bytes so its storage choice is actually honored.
-                    if *policy != ProverConfig::heap() {
+                    // Coset policy is applied during proving and does not
+                    // change key storage. Only key mapping needs raw bytes.
+                    if policy.map_prover_key {
                         return Err(anyhow::anyhow!(
                             "mapped memory policy requires a serialized prover key"
                         ));
@@ -235,7 +235,7 @@ impl<T: Zkir> ProverKey<T> {
                 return Err(anyhow::anyhow!("known invalid prover key"));
             }
             InnerProverKey::Initialized(key) => {
-                if *policy != ProverConfig::heap() {
+                if policy.map_prover_key {
                     return Err(anyhow::anyhow!(
                         "mapped memory policy requires a serialized prover key"
                     ));
