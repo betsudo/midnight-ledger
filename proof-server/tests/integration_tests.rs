@@ -18,8 +18,9 @@ mod common {
     use std::time::Duration;
 
     use actix_web::{dev::ServerHandle, rt};
+    pub use midnight_proof_server::IngressConfig;
     use midnight_proof_server::worker_pool::WorkerPool;
-    use midnight_proof_server::{IngressConfig, server, server_with_ingress_config};
+    use midnight_proof_server::{server, server_with_ingress_config};
     use reqwest::Client;
 
     pub const DEFAULT_NUM_WORKERS: usize = 2;
