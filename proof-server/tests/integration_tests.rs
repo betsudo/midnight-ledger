@@ -65,11 +65,19 @@ mod common {
     }
 
     pub fn start_server_with_ingress_limits(config: IngressConfig) -> TestServer {
+        start_server_with_queue_and_ingress(DEFAULT_NUM_WORKERS, DEFAULT_JOB_LIMIT, config)
+    }
+
+    pub fn start_server_with_queue_and_ingress(
+        num_workers: usize,
+        job_limit: usize,
+        config: IngressConfig,
+    ) -> TestServer {
         init_logger();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             rt::System::new().block_on(async move {
-                let pool = WorkerPool::new(DEFAULT_NUM_WORKERS, DEFAULT_JOB_LIMIT, 600.0);
+                let pool = WorkerPool::new(num_workers, job_limit, 600.0);
                 let (srv, bound_port) = server_with_ingress_config(0, false, pool, config)
                     .expect("Failed to start server");
                 tx.send((srv.handle(), bound_port))
@@ -369,7 +377,7 @@ mod prove_tx_endpoint {
             .await
             .expect("Request failed");
 
-        assert_eq!(response.status(), 404);
+        assert_eq!(response.status(), 405);
 
         stop_server(server).await;
     }
@@ -492,7 +500,14 @@ mod prove_tx_endpoint {
 
     #[tokio::test]
     async fn handles_concurrent_requests() {
-        let server = start_server(DEFAULT_NUM_WORKERS, 10);
+        let server = start_server_with_queue_and_ingress(
+            DEFAULT_NUM_WORKERS,
+            10,
+            IngressConfig {
+                max_inflight: 10,
+                ..IngressConfig::default()
+            },
+        );
         let body = serialize_prove_tx_body().await;
 
         let tasks: Vec<_> = (0..10)
@@ -629,7 +644,14 @@ mod ready_endpoint {
 
     #[tokio::test]
     async fn zero_capacity_allows_unlimited_jobs() {
-        let server = start_server(DEFAULT_NUM_WORKERS, 0);
+        let server = start_server_with_queue_and_ingress(
+            DEFAULT_NUM_WORKERS,
+            0,
+            IngressConfig {
+                max_inflight: 10,
+                ..IngressConfig::default()
+            },
+        );
         let body = serialize_prove_tx_body().await;
 
         let base_url = server.base_url();
@@ -760,7 +782,7 @@ mod k_endpoint {
             .await
             .expect("Request failed");
 
-        assert_eq!(response.status(), 404);
+        assert_eq!(response.status(), 405);
 
         stop_server(server).await;
     }
@@ -813,7 +835,7 @@ mod check_endpoint {
             .await
             .expect("Request failed");
 
-        assert_eq!(response.status(), 404);
+        assert_eq!(response.status(), 405);
 
         stop_server(server).await;
     }
@@ -939,7 +961,7 @@ mod prove_endpoint {
             .await
             .expect("Request failed");
 
-        assert_eq!(response.status(), 404);
+        assert_eq!(response.status(), 405);
 
         stop_server(server).await;
     }

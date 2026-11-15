@@ -17,6 +17,7 @@ use actix_web::error::{
 use async_channel::{Receiver, RecvError, Sender, bounded, unbounded};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 use thiserror::Error;
 use tokio::{sync::Mutex, task};
@@ -132,6 +133,9 @@ pub struct Requests {
     pub capacity: usize,
     job_ttl: Duration,
     reqs: Arc<Mutex<HashMap<Uuid, Job>>>,
+    // Counts actual queued closures, including cancelled or expired jobs
+    // whose captured input has not yet been dropped by a worker.
+    queued: Arc<AtomicUsize>,
 }
 
 impl Requests {
@@ -140,6 +144,7 @@ impl Requests {
             capacity,
             job_ttl,
             reqs: Default::default(),
+            queued: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -162,7 +167,7 @@ impl Requests {
     }
 
     pub async fn is_full(&self) -> bool {
-        self.capacity != 0 && self.pending_count().await >= self.capacity
+        self.capacity != 0 && self.queued.load(Ordering::Acquire) >= self.capacity
     }
 
     async fn set_status(&self, id: &Uuid, status: JobStatus) {
@@ -178,16 +183,13 @@ impl Requests {
         // HTTP requests could all observe spare capacity and overfill the
         // supposedly bounded queue before any one of them inserted its job.
         let mut reqs = self.reqs.lock().await;
-        let pending = reqs
-            .values()
-            .filter(|job| matches!(job.status, JobStatus::Pending))
-            .count();
-        if self.capacity != 0 && pending >= self.capacity {
+        if self.capacity != 0 && self.queued.load(Ordering::Acquire) >= self.capacity {
             return Err(WorkerPoolError::JobQueueFull);
         }
         let req = Job::new(self.job_ttl);
         let id = Uuid::new_v4();
         reqs.insert(id, req);
+        self.queued.fetch_add(1, Ordering::Release);
         Ok(id)
     }
 
@@ -259,7 +261,9 @@ impl WorkerPool {
                 while let Ok(work) = work_receiver.recv().await {
                     // Starting work and cancelling it must compete for the
                     // same pending state under one lock.
-                    if !requests.start_processing(work.id).await {
+                    let started = requests.start_processing(work.id).await;
+                    requests.queued.fetch_sub(1, Ordering::AcqRel);
+                    if !started {
                         continue;
                     }
                     let result = task::spawn_blocking(work.work).await;
@@ -310,13 +314,19 @@ impl WorkerPool {
         F: FnOnce() -> Result<Vec<u8>, WorkError> + Send + 'static,
     {
         let id = self.requests.new_req().await?;
-        self.sender
+        if self
+            .sender
             .send(WorkItem {
                 id,
                 work: Box::new(work),
             })
             .await
-            .map_err(|_| WorkerPoolError::ChannelClosed)?;
+            .is_err()
+        {
+            self.requests.queued.fetch_sub(1, Ordering::AcqRel);
+            self.requests.reqs.lock().await.remove(&id);
+            return Err(WorkerPoolError::ChannelClosed);
+        }
         Ok(id)
     }
 
@@ -622,5 +632,43 @@ mod tests {
 
         assert_eq!(accepted, CAPACITY);
         assert_eq!(requests.pending_count().await, CAPACITY);
+    }
+
+    #[tokio::test]
+    async fn expired_queued_work_still_occupies_capacity() {
+        let pool = WorkerPool::new(1, 1, 0.05);
+        let (release_first, first_released) = std::sync::mpsc::channel();
+        let (_, first_updates) = pool
+            .submit_and_subscribe(move || {
+                first_released.recv().unwrap();
+                Ok(vec![])
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            first_updates.recv().await,
+            Ok(JobStatus::Processing)
+        ));
+
+        let retained = Arc::new(AtomicBool::new(false));
+        let retained_in_work = retained.clone();
+        pool.submit(move || {
+            retained_in_work.store(true, Ordering::SeqCst);
+            Ok(vec![])
+        })
+        .await
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        pool.requests.gc().await;
+        assert_eq!(pool.requests.pending_count().await, 0);
+        assert_eq!(pool.requests.queued.load(Ordering::Acquire), 1);
+        assert!(matches!(
+            pool.submit(|| Ok(vec![])).await,
+            Err(WorkerPoolError::JobQueueFull)
+        ));
+
+        release_first.send(()).unwrap();
+        pool.shutdown().await;
+        assert!(!retained.load(Ordering::SeqCst));
     }
 }
