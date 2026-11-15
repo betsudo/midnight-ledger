@@ -13,10 +13,12 @@
 
 #![deny(unreachable_pub)]
 #![deny(warnings)]
-use actix_web::error::ErrorBadRequest;
-use actix_web::http::StatusCode;
+use actix_web::error::{
+    ErrorBadRequest, ErrorPayloadTooLarge, ErrorRequestTimeout, ErrorTooManyRequests,
+};
+use actix_web::http::{StatusCode, header};
 use actix_web::web::{self, Bytes, BytesMut, Data, Payload};
-use actix_web::{Error, HttpResponse, HttpResponseBuilder, Responder, get, post};
+use actix_web::{Error, HttpRequest, HttpResponse, HttpResponseBuilder, Responder, get, post};
 use base_crypto::data_provider::{self, MidnightDataProvider};
 use base_crypto::data_provider::{FetchMode, OutputMode};
 use futures_util::stream::StreamExt;
@@ -29,8 +31,10 @@ use ledger::structure::{
     INITIAL_TRANSACTION_COST_MODEL, ProofPreimageMarker, ProofPreimageVersioned, ProofVersioned,
     Signature, Transaction,
 };
+use midnight_proofs::config::ProverConfig;
 use rand::rngs::OsRng;
 use serialize::{tagged_deserialize, tagged_serialize};
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 use storage::db::InMemoryDB;
@@ -42,6 +46,7 @@ use transient_crypto::proofs::{KeyLocation, ProvingKeyMaterial, Resolver as Reso
 use zkir as zkir_v2;
 use zswap::prove::ZswapResolver;
 
+use crate::IngressState;
 use crate::versioned_ir;
 use crate::worker_pool::{JobStatus, WorkError, WorkerPool};
 
@@ -56,13 +61,67 @@ lazy_static! {
     );
 }
 
-async fn payload_to_bytes(mut payload: Payload) -> Result<Bytes, Error> {
-    let mut body = BytesMut::new();
-    while let Some(chunk) = payload.next().await {
-        let chunk = chunk?;
-        body.extend_from_slice(&chunk);
+async fn payload_to_bytes(
+    request: &HttpRequest,
+    mut payload: Payload,
+    ingress: &IngressState,
+) -> Result<Bytes, Error> {
+    let max = ingress.config.max_body_bytes;
+    if let Some(length) = request.headers().get(header::CONTENT_LENGTH) {
+        let length = length
+            .to_str()
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .ok_or_else(|| ErrorBadRequest("invalid Content-Length"))?;
+        if length > max {
+            return Err(ErrorPayloadTooLarge(
+                "request body exceeds configured limit",
+            ));
+        }
     }
+    let mut body = BytesMut::new();
+    tokio::time::timeout(ingress.config.read_timeout, async {
+        while let Some(chunk) = payload.next().await {
+            let chunk = chunk?;
+            if chunk.len() > max.saturating_sub(body.len()) {
+                return Err(ErrorPayloadTooLarge(
+                    "request body exceeds configured limit",
+                ));
+            }
+            body.extend_from_slice(&chunk);
+        }
+        Ok::<_, Error>(())
+    })
+    .await
+    .map_err(|_| ErrorRequestTimeout("request body read timed out"))??;
     Ok(body.freeze())
+}
+
+async fn ingress_permit(
+    pool: &WorkerPool,
+    ingress: &IngressState,
+) -> Result<tokio::sync::OwnedSemaphorePermit, Error> {
+    if pool.requests.is_full().await {
+        return Err(ErrorTooManyRequests("job queue full"));
+    }
+    ingress
+        .permits
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| ErrorTooManyRequests("too many concurrent request bodies"))
+}
+
+fn log_request(request: &Bytes) {
+    if tracing::enabled!(tracing::Level::DEBUG) {
+        if request.len() <= 4096 {
+            debug!(
+                "Received request: {}",
+                (&request[..]).encode_hex::<String>()
+            );
+        } else {
+            debug!("Received request: {} bytes (hex omitted)", request.len());
+        }
+    }
 }
 
 type TransactionProvePayload<S> = (
@@ -155,13 +214,19 @@ pub(crate) async fn proof_versions() -> impl Responder {
 }
 
 #[post("/k")]
-pub(crate) async fn get_k(payload: Payload) -> Result<HttpResponse, Error> {
+pub(crate) async fn get_k(
+    request: HttpRequest,
+    ingress: Data<Arc<IngressState>>,
+    payload: Payload,
+) -> Result<HttpResponse, Error> {
     info!("Starting to process request for /k...");
-    let request = payload_to_bytes(payload).await?;
-    debug!(
-        "Received request: {}",
-        (&request[..]).encode_hex::<String>()
-    );
+    let _permit = ingress
+        .permits
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| ErrorTooManyRequests("too many concurrent request bodies"))?;
+    let request = payload_to_bytes(&request, payload, &ingress).await?;
+    log_request(&request);
 
     let k = versioned_ir::k(&request).map_err(ErrorBadRequest)?;
 
@@ -170,15 +235,15 @@ pub(crate) async fn get_k(payload: Payload) -> Result<HttpResponse, Error> {
 
 #[post("/check")]
 pub(crate) async fn check(
+    request: HttpRequest,
     pool: Data<Arc<WorkerPool>>,
+    ingress: Data<Arc<IngressState>>,
     payload: Payload,
 ) -> Result<HttpResponse, Error> {
     info!("Starting to process request for /check...");
-    let request = payload_to_bytes(payload).await?;
-    debug!(
-        "Received request: {}",
-        (&request[..]).encode_hex::<String>()
-    );
+    let permit = ingress_permit(&pool, &ingress).await?;
+    let request = payload_to_bytes(&request, payload, &ingress).await?;
+    log_request(&request);
     let (ppi, ir): (ProofPreimageVersioned, Option<WrappedIr>) =
         tagged_deserialize(&request[..]).map_err(ErrorBadRequest)?;
     let (_id, updates) = pool
@@ -236,6 +301,7 @@ pub(crate) async fn check(
             })
         })
         .await?;
+    drop(permit);
     let response = JobStatus::wait_for_success(&updates).await?;
 
     Ok(HttpResponse::Ok().body(response))
@@ -243,22 +309,25 @@ pub(crate) async fn check(
 
 #[post("/prove")]
 pub(crate) async fn prove(
+    request: HttpRequest,
     pool: Data<Arc<WorkerPool>>,
+    ingress: Data<Arc<IngressState>>,
+    v3_policy: Data<Option<ProverConfig>>,
     payload: Payload,
 ) -> Result<HttpResponse, Error> {
     info!("Starting to process request for /prove...");
-    let request = payload_to_bytes(payload).await?;
-    debug!(
-        "Received request: {}",
-        (&request[..]).encode_hex::<String>()
-    );
+    let permit = ingress_permit(&pool, &ingress).await?;
+    let request = payload_to_bytes(&request, payload, &ingress).await?;
+    log_request(&request);
     let (ppi, data, binding_input): (
         ProofPreimageVersioned,
         Option<ProvingKeyMaterial>,
         Option<Fr>,
     ) = tagged_deserialize(&request[..]).map_err(ErrorBadRequest)?;
 
+    let data = data.map(Arc::new);
     let data_resolver = data.clone();
+    let v3_policy = v3_policy.get_ref().clone();
     let (_id, updates) = pool
         .submit_and_subscribe(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
@@ -277,7 +346,9 @@ pub(crate) async fn prove(
                         .expect("data provider initialization failed"),
                     ),
                     Box::new(move |_: KeyLocation| {
-                        Box::pin(std::future::ready(Ok(data_resolver.clone())))
+                        Box::pin(std::future::ready(Ok(data_resolver
+                            .as_ref()
+                            .map(|material| material.as_ref().clone()))))
                     }),
                 );
                 let proof = match ppi {
@@ -287,24 +358,30 @@ pub(crate) async fn prove(
                             inner.binding_input = binding_input;
                             ppi = Arc::new(inner);
                         }
-                        let proving_data = match data {
-                            Some(pkm) => pkm,
-                            None => resolver
-                                .resolve_key(ppi.key_location.clone())
-                                .await
-                                .map_err(|e| WorkError::BadInput(e.to_string()))?
-                                .ok_or_else(|| {
-                                    WorkError::BadInput(format!(
-                                        "couldn't find key {}",
-                                        ppi.key_location.0
-                                    ))
-                                })?,
+                        let proving_data = match data.as_ref() {
+                            Some(pkm) => Cow::Borrowed(pkm.as_ref()),
+                            None => Cow::Owned(
+                                resolver
+                                    .resolve_key(ppi.key_location.clone())
+                                    .await
+                                    .map_err(|e| WorkError::BadInput(e.to_string()))?
+                                    .ok_or_else(|| {
+                                        WorkError::BadInput(format!(
+                                            "couldn't find key {}",
+                                            ppi.key_location.0
+                                        ))
+                                    })?,
+                            ),
                         };
 
-                        let proof = versioned_ir::prove(ppi, &proving_data.ir_source, &resolver)
-                            .await
-                            .map_err(WorkError::BadInput)?
-                            .0;
+                        let proof = versioned_ir::prove(
+                            ppi,
+                            &proving_data.ir_source,
+                            &resolver,
+                            v3_policy.as_ref(),
+                        )
+                        .await?
+                        .0;
 
                         ProofVersioned::V2(proof)
                     }
@@ -319,6 +396,7 @@ pub(crate) async fn prove(
             })
         })
         .await?;
+    drop(permit);
     let response = JobStatus::wait_for_success(&updates).await?;
 
     Ok(HttpResponse::Ok().body(response))
@@ -326,15 +404,15 @@ pub(crate) async fn prove(
 
 #[post("/prove-tx")]
 pub(crate) async fn prove_transaction(
+    request: HttpRequest,
     pool: Data<Arc<WorkerPool>>,
+    ingress: Data<Arc<IngressState>>,
     payload: Payload,
 ) -> Result<HttpResponse, Error> {
     info!("Starting to process request for /prove-tx...");
-    let request = payload_to_bytes(payload).await?;
-    debug!(
-        "Received request: {}",
-        (&request[..]).encode_hex::<String>()
-    );
+    let permit = ingress_permit(&pool, &ingress).await?;
+    let request = payload_to_bytes(&request, payload, &ingress).await?;
+    log_request(&request);
     let (tx, keys): TransactionProvePayload<Signature> =
         tagged_deserialize(&request[..]).map_err(ErrorBadRequest)?;
     let (_id, updates) = pool
@@ -376,6 +454,7 @@ pub(crate) async fn prove_transaction(
             })
         })
         .await?;
+    drop(permit);
     let response = JobStatus::wait_for_success(&updates).await?;
     Ok(HttpResponse::Ok().body(response))
 }

@@ -6,6 +6,22 @@ with `zswap` being tracked in [Changelog Zswap](./CHANGELOG_zswap.md).
 
 ## Unreleased
 
+- feat: add an explicit, opt-in V3 proof-server memory policy for mapped
+  proving keys and k-gated coset spilling. The default and V2 paths retain
+  their compatibility behavior; malformed key bytes and native storage
+  failures preserve separate client/server error provenance.
+- feat: the proof server can opt into trusted, read-only mapped universal
+  parameters with the `native-memory` feature on native targets; its default
+  and WebAssembly paths use heap loading. Parameter load failures retain
+  server-owned error provenance.
+- fix: bound request ingress before queue admission and preserve atomic
+  pending-job admission under concurrent proving requests.
+- test: exercise the released ZKIR v3 key format, Compact-generated and
+  TypeScript-generated preimages, WebAssembly proof interop, and explicit
+  native memory policies against the Ledger9 proving path.
+- chore: select the published `midnight-zkir` 3.2.1 crate for the Ledger9
+  proof server.
+
 ## Ledger 9.1.0.1
 
 - note: alongside the ledger crates, this release ships `ledger-wasm` `1.0.1`,

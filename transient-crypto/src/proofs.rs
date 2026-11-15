@@ -16,12 +16,11 @@
 //! focus of [Compact](https://github.com/input-output-hk/compactc).
 
 use crate::curve::{Fr, outer};
-use base_crypto::hash::{HashOutput, persistent_hash};
 use derive_where::derive_where;
 use lazy_static::lazy_static;
-use lru::LruCache;
 use midnight_curves::Bls12;
 use midnight_proofs::{
+    config::{ProverConfig, ProverContext},
     poly::kzg::params::{ParamsKZG, ParamsVerifierKZG},
     utils::SerdeFormat,
 };
@@ -38,20 +37,66 @@ use serialize::{
 };
 #[cfg(feature = "proptest")]
 use serialize::{NoStrategy, simple_arbitrary};
+use std::borrow::Cow;
+use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
 use std::io::Write;
-use std::io::{self, Read};
+use std::io::{self, Read, Seek};
 #[cfg(feature = "proptest")]
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 use std::{any::Any, cmp::Ordering};
-use std::{borrow::Cow, num::NonZeroUsize};
-use std::{fmt::Debug, io::Seek};
 use storage_core::Storable;
 use storage_core::arena::ArenaKey;
 use storage_core::db::DB;
 use storage_core::storable::Loader;
 use zeroize::{Zeroize, ZeroizeOnDrop};
+
+/// How `ParamsProverProvider::get_params` loads the SRS.
+///
+/// The same argument as `midnight_proofs::config::ProverConfig`, one crate up:
+/// two variables read inline are invisible in every signature, cannot differ
+/// between two providers in one process, and cannot be exercised by a test
+/// without mutating process environment — which is `unsafe` under Rust 2024
+/// and races every other test in the binary.
+///
+/// The variables still work and mean what they meant; they are parsed in one
+/// place instead of at their use sites.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ParamsLoadPolicy {
+    /// Build the mmap companion file on first miss, paying a transient 2×
+    /// peak to write it out. A one-shot desktop precompute — a device should
+    /// ship the resulting file rather than build it.
+    pub build_mmap_companion: bool,
+
+    /// Skip parsing `g_lagrange` and recompute it on first use. Trades one
+    /// inverse NTT for peak RAM during the parse; worth it only where the
+    /// recompute amortises over a long idle period, and a clear loss in a
+    /// tight prove loop.
+    pub lazy_params: bool,
+}
+
+impl ParamsLoadPolicy {
+    /// Read the policy from the environment. The only place this crate does so.
+    ///
+    /// | variable | field |
+    /// |---|---|
+    /// | `MIDNIGHT_MMAP_BUILD` | [`build_mmap_companion`](Self::build_mmap_companion) |
+    /// | `MIDNIGHT_LAZY_PARAMS` | [`lazy_params`](Self::lazy_params) |
+    pub fn from_env() -> Self {
+        let flag = |name: &str| matches!(std::env::var(name).as_deref(), Ok("1") | Ok("true"));
+        Self {
+            build_mmap_companion: flag("MIDNIGHT_MMAP_BUILD"),
+            lazy_params: flag("MIDNIGHT_LAZY_PARAMS"),
+        }
+    }
+
+    /// The process-wide policy, read once.
+    pub fn process() -> Self {
+        static POLICY: std::sync::OnceLock<ParamsLoadPolicy> = std::sync::OnceLock::new();
+        *POLICY.get_or_init(ParamsLoadPolicy::from_env)
+    }
+}
 
 /// A provider of prover parameters.
 pub trait ParamsProverProvider {
@@ -59,20 +104,75 @@ pub trait ParamsProverProvider {
     #[allow(async_fn_in_trait)]
     /// Retrieve the parameters for a given `k` value
     async fn get_params(&self, k: u8) -> io::Result<ParamsProver>;
+
+    /// Retrieve parameters under an explicit load policy.
+    ///
+    /// Providers without a policy-aware loader retain their existing behavior
+    /// for eager loading and reject an explicit lazy request. `MappedParams`
+    /// forwards its policy through this method on a companion miss;
+    /// `MidnightDataProvider` honors `lazy_params` here.
+    #[allow(async_fn_in_trait)]
+    async fn get_params_with_policy(
+        &self,
+        k: u8,
+        policy: ParamsLoadPolicy,
+    ) -> io::Result<ParamsProver> {
+        if policy.lazy_params {
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "parameter provider does not support lazy loading",
+            ))
+        } else {
+            self.get_params(k).await
+        }
+    }
 }
 
 /// The hash used during proof transcript processing
 pub type TranscriptHash = blake2b_simd::State;
 
+#[cfg(all(feature = "native-memory", not(target_family = "wasm")))]
+mod companion_cache;
+#[cfg(all(feature = "native-memory", not(target_family = "wasm")))]
+pub use companion_cache::{CompanionCache, MappedParams, PublishOutcome, TrustedParamsDir};
+
+/// Parameters always load into memory this provider owns.
+///
+/// Mapping a companion is not reachable from here, and no environment variable
+/// can make it reachable: it requires a `TrustedParamsDir`, which requires an
+/// `unsafe` block, which requires a caller willing to make the promise about a
+/// directory they chose. Wrap this provider in `MappedParams` to opt in.
 impl ParamsProverProvider for base_crypto::data_provider::MidnightDataProvider {
     async fn get_params(&self, k: u8) -> io::Result<ParamsProver> {
-        let name = Self::name_k(k);
-        let reader = self
-            .get_file(
-                &name,
-                &format!("public parameters for k={k} not found in cache"),
-            )
-            .await?;
+        load_midnight_params(self, k, ParamsLoadPolicy::process()).await
+    }
+
+    async fn get_params_with_policy(
+        &self,
+        k: u8,
+        policy: ParamsLoadPolicy,
+    ) -> io::Result<ParamsProver> {
+        load_midnight_params(self, k, policy).await
+    }
+}
+
+async fn load_midnight_params(
+    provider: &base_crypto::data_provider::MidnightDataProvider,
+    k: u8,
+    policy: ParamsLoadPolicy,
+) -> io::Result<ParamsProver> {
+    let name = base_crypto::data_provider::MidnightDataProvider::name_k(k);
+    let reader = provider
+        .get_file(
+            &name,
+            &format!("public parameters for k={k} not found in cache"),
+        )
+        .await?;
+    // Both readers own their memory. The lazy path skips the on-disk
+    // `g_lagrange` block and recomputes it on first use.
+    if policy.lazy_params {
+        ParamsProver::read_lazy(reader)
+    } else {
         ParamsProver::read(reader)
     }
 }
@@ -88,9 +188,136 @@ impl AsRef<ParamsKZG<Bls12>> for ParamsProver {
 }
 
 impl ParamsProver {
-    /// Reads the prover parameters from a data stream
+    /// Reads the prover parameters from a data stream.
+    ///
+    /// Eager — parses both `g` and `g_lagrange` from the file. Peak
+    /// resident heap during the parse is 2× the SRS size.
     pub fn read<R: Read>(mut reader: R) -> io::Result<Self> {
         Ok(ParamsProver(Arc::new(ParamsKZG::read_custom(
+            &mut reader,
+            SerdeFormat::RawBytesUnchecked,
+        )?)))
+    }
+
+    /// Constructs prover parameters by memory-mapping a companion
+    /// SRS file laid out by [`write_mmap_companion`](Self::write_mmap_companion).
+    ///
+    /// The returned `ParamsProver` holds an `Arc<Mmap>` internally;
+    /// `g` and `g_lagrange` are slice views into the mapping, so
+    /// the SRS contributes **zero heap allocation**. Touched pages
+    /// count against RSS but the OS evicts cold pages under
+    /// memory pressure — the win is during the heavy prove phases
+    /// when FFT scratch dominates and the SRS is referenced only
+    /// at the MSM call sites.
+    ///
+    /// Available only against the patched `midnight-proofs` fork, and
+    /// only on targets that have `mmap(2)`. On wasm the method is
+    /// absent rather than failing at runtime: `read_mmap_arc` is itself
+    /// behind the fork's `mmap` feature there, so calling this could
+    /// never have worked.
+    ///
+    /// # Safety
+    ///
+    /// A mapping is only sound while the mapped file is not modified or
+    /// truncated by anyone — `memmap2::Mmap::map` states it, and a shortened
+    /// or rewritten file behind a live `&[E::G1]` is undefined behaviour, not
+    /// merely a wrong proof. This function maps **an arbitrary path**, so the
+    /// caller must guarantee that no process will write to or truncate that
+    /// file for as long as the returned value, or any clone of it, lives.
+    ///
+    /// The safe way to get a mapped `ParamsProver` is [`CompanionCache`],
+    /// which only ever maps files it published itself and never rewrites a
+    /// published inode. Use this function only for a file with an equivalent
+    /// guarantee that this crate cannot see.
+    ///
+    /// # Trust boundary
+    ///
+    /// The companion is a local cache, not an interchange format: never fetch
+    /// it, never sync it between devices, never accept one from another party.
+    ///
+    /// The header is validated before anything is mapped — magic, point size,
+    /// every offset and count, and each block's alignment — so a malformed
+    /// file fails with `InvalidData`. The *contents* are not: bytes inside a
+    /// well-formed block become `E::G1` values without a curve check. A
+    /// hostile file therefore produces wrong proofs rather than memory
+    /// corruption, and only because every bit pattern is valid for the
+    /// underlying field representation.
+    #[cfg(all(feature = "native-memory", not(target_family = "wasm")))]
+    #[allow(unsafe_code)]
+    pub unsafe fn read_mmap_path<P: AsRef<std::path::Path>>(path: P) -> io::Result<Self> {
+        let file = std::fs::File::open(path)?;
+        // SAFETY: the caller has promised (see `# Safety`) that nothing will
+        // modify or truncate this file while the mapping lives; that is the
+        // whole obligation `Mmap::map` places on us, and it is the reason this
+        // function is `unsafe` rather than documented-and-safe.
+        let mmap = unsafe { memmap2::Mmap::map(&file)? };
+        // SAFETY: this function's caller guarantees that the backing file is
+        // immutable for the lifetime of the returned params and every clone.
+        Ok(ParamsProver(Arc::new(unsafe {
+            ParamsKZG::read_mmap_arc(Arc::new(mmap))?
+        })))
+    }
+
+    /// Publish the current params as a companion file at `path`, ready for
+    /// [`CompanionCache::open`]. Use after a one-time eager `read` to produce
+    /// the file that is then mapped on every subsequent run.
+    ///
+    /// **A published companion is never rewritten.** The bytes go to a
+    /// private temp file in `path`'s directory, are synced, and
+    /// land under `path` by one atomic rename that refuses to replace an
+    /// existing file. If `path` already exists this returns
+    /// [`io::ErrorKind::AlreadyExists`] and leaves it untouched — some process
+    /// may hold a mapping of that inode, and truncating it under them is the
+    /// fault this crate does not commit. A caller that only needs *a*
+    /// companion to exist should use [`CompanionCache::open_or_build`].
+    ///
+    /// Host-only for the same reason as [`read_mmap_path`](Self::read_mmap_path):
+    /// writing a companion nothing on this target can map back is not a
+    /// useful thing to be able to do.
+    #[cfg(all(feature = "native-memory", not(target_family = "wasm")))]
+    pub fn write_mmap_companion<P: AsRef<std::path::Path>>(&self, path: P) -> io::Result<()> {
+        let path = path.as_ref();
+        let dir = path
+            .parent()
+            .filter(|d| !d.as_os_str().is_empty())
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "companion path must have a parent directory",
+                )
+            })?;
+        let file_name = path.file_name().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "companion path must name a file",
+            )
+        })?;
+        match CompanionCache::publish_params_into(dir, file_name, self)? {
+            PublishOutcome::Published => Ok(()),
+            PublishOutcome::AlreadyPublished => Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!(
+                    "companion {} is already published; a published companion is never rewritten \
+                     (it may be mapped) — use CompanionCache::open_or_build to reuse it",
+                    path.display()
+                ),
+            )),
+        }
+    }
+
+    /// Reads the prover parameters from a seekable data stream,
+    /// skipping the on-disk `g_lagrange` block. The Lagrange basis is
+    /// recomputed via inverse-NTT of `g` on first use and cached
+    /// thereafter.
+    ///
+    /// Peak resident heap during the parse stays at 1× the SRS size
+    /// (no second `Vec` is allocated). The first `commit_lagrange`
+    /// in any subsequent prove pays one FFT to populate the cache.
+    ///
+    /// Available only against the patched `midnight-proofs` fork at
+    /// `[patch.crates-io]`. Falls back to `read` if absent.
+    pub fn read_lazy<R: Read + Seek>(mut reader: R) -> io::Result<Self> {
+        Ok(ParamsProver(Arc::new(ParamsKZG::read_custom_lazy(
             &mut reader,
             SerdeFormat::RawBytesUnchecked,
         )?)))
@@ -175,6 +402,24 @@ pub trait Zkir: Any + Send + Sync + Debug + Sized {
         preimage: &ProofPreimage,
     ) -> Result<(Proof, Vec<Fr>, Vec<Option<usize>>), ProvingError>;
 
+    /// Prove with request-owned storage policy and cancellation.
+    ///
+    /// Existing IR implementations can keep the original `prove` method.
+    /// They must opt in before this entry point can be used; the default
+    /// returns an explicit error rather than ignoring the context.
+    async fn prove_with_context(
+        &self,
+        _rng: impl Rng + CryptoRng,
+        _params: &impl ParamsProverProvider,
+        _pk: ProverKey<Self>,
+        _preimage: &ProofPreimage,
+        _context: &ProverContext,
+    ) -> Result<(Proof, Vec<Fr>, Vec<Option<usize>>), ProvingError> {
+        Err(anyhow::anyhow!(
+            "explicit proof context is not supported by this ZKIR"
+        ))
+    }
+
     /// Returns the k value for this circuit
     fn k(&self) -> u8;
 
@@ -201,6 +446,17 @@ pub trait Zkir: Any + Send + Sync + Debug + Sized {
 
     /// Reads a raw (untagged) prover key from a byte stream.
     fn read_raw_pk(reader: impl Read) -> io::Result<Self::ProverKey>;
+    /// Read a raw key under an explicit memory policy. Implementations using
+    /// context proving must opt in rather than silently ignoring the policy.
+    fn read_raw_pk_with_policy(
+        _reader: impl Read,
+        _policy: &ProverConfig,
+    ) -> io::Result<Self::ProverKey> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "explicit prover-key memory policy is not supported by this ZKIR",
+        ))
+    }
     /// Writes a raw (untagged) prover key to a byte stream.
     fn write_raw_pk(writer: impl Write, pk: &Self::ProverKey) -> io::Result<()>;
 }
@@ -223,14 +479,16 @@ impl<T: Zkir> Distribution<ProverKey<T>> for Standard {
         let size: u8 = rng.gen_range(0..32);
         let mut bytes = Vec::with_bounded_capacity(size as usize);
         rng.fill_bytes(&mut bytes);
-        ProverKey(Arc::new(Mutex::new(InnerProverKey::Uninitialized(bytes))))
+        ProverKey(Arc::new(Mutex::new(InnerProverKey::Uninitialized(
+            Arc::new(bytes),
+        ))))
     }
 }
 
 #[derive(Debug, Clone)]
 pub(crate) enum InnerProverKey<T: Zkir> {
-    Uninitialized(Vec<u8>),
-    Invalid(Vec<u8>),
+    Uninitialized(Arc<Vec<u8>>),
+    Invalid(Arc<Vec<u8>>),
     Initialized(Arc<T::ProverKey>),
 }
 
@@ -243,85 +501,7 @@ impl<T: Zkir + Tagged> Tagged for ProverKey<T> {
     }
 }
 
-const PK_CACHE_SIZE: usize = 5;
-
-lazy_static! {
-    // forall<T> Arc<MidnightPK<T>>
-    static ref PK_CACHE: Mutex<LruCache<HashOutput, Arc<dyn Any + Send + Sync>>> =
-        Mutex::new(LruCache::new(NonZeroUsize::new(PK_CACHE_SIZE).unwrap()));
-}
-
-impl<T: Zkir> InnerProverKey<T> {
-    fn try_cache(&mut self) {
-        let hash = match self {
-            InnerProverKey::Uninitialized(data) => persistent_hash(&data[..]),
-            _ => return,
-        };
-        if let Some(pk) = PK_CACHE
-            .lock()
-            .ok()
-            .and_then(|mut c| c.get(&hash).cloned())
-            .and_then(|ptr| ptr.downcast().ok())
-        {
-            *self = InnerProverKey::Initialized(pk);
-        }
-    }
-}
-
-impl<T: Zkir> ProverKey<T> {
-    /// Constructs a `ProverKey` from an already-initialized raw inner key.
-    pub fn from_raw(raw: T::ProverKey) -> Self {
-        ProverKey(Arc::new(Mutex::new(InnerProverKey::Initialized(Arc::new(
-            raw,
-        )))))
-    }
-
-    /// Initializes the lazy prover key
-    pub fn init(&self) -> Result<Arc<T::ProverKey>, ProvingError> {
-        let mut mutex = self.0.lock().expect("mutex is not poisoned");
-        mutex.try_cache();
-        let data = match &*mutex {
-            InnerProverKey::Initialized(key) => {
-                return Ok(key.clone());
-            }
-            InnerProverKey::Invalid(_) => {
-                return Err(anyhow::anyhow!("known invalid verifier key"));
-            }
-            InnerProverKey::Uninitialized(data) => data.clone(),
-        };
-        let mut inner_reader = &mut &data[..];
-        let read_inner = |inner_reader| {
-            let pk = T::read_raw_pk(inner_reader)?;
-            Ok(pk)
-        };
-        let res: Result<_, ProvingError> = read_inner(&mut inner_reader);
-        match res {
-            Ok(pk) => {
-                let key = Arc::new(pk);
-                PK_CACHE
-                    .lock()
-                    .ok()
-                    .and_then(|mut c| c.put(persistent_hash(&data), key.clone()));
-                *mutex = InnerProverKey::Initialized(key.clone());
-                Ok(key)
-            }
-            Err(e) => {
-                *mutex = InnerProverKey::Invalid(data);
-                Err(e)
-            }
-        }
-    }
-
-    fn inner_serialize<W: std::io::Write>(&self, mut writer: W) -> std::io::Result<()> {
-        match &*self.0.lock().expect("mutex is not poisoned") {
-            InnerProverKey::Uninitialized(data) | InnerProverKey::Invalid(data) => {
-                writer.write_all(data)?;
-                Ok(())
-            }
-            InnerProverKey::Initialized(key) => T::write_raw_pk(&mut writer, key),
-        }
-    }
-}
+mod key_cache;
 
 struct Count(usize);
 
@@ -353,9 +533,11 @@ impl<T: Zkir> Serializable for ProverKey<T> {
 impl<T: Zkir> Deserializable for ProverKey<T> {
     fn deserialize(reader: &mut impl Read, recursion_depth: u32) -> Result<Self, std::io::Error> {
         let buf = <Vec<u8> as Deserializable>::deserialize(reader, recursion_depth)?;
-        let mut pk = InnerProverKey::Uninitialized(buf);
-        pk.try_cache();
-        Ok(Self(Arc::new(Mutex::new(pk))))
+        // Keep serialized bytes until `init` selects the process cache or
+        // `init_with_policy` selects the request's storage policy.
+        Ok(Self(Arc::new(Mutex::new(InnerProverKey::Uninitialized(
+            Arc::new(buf),
+        )))))
     }
 }
 
@@ -757,6 +939,36 @@ impl ProofPreimage {
         params: &impl ParamsProverProvider,
         resolver: &impl Resolver,
     ) -> Result<(Proof, Vec<Option<usize>>), ProvingError> {
+        self.prove_inner::<Z>(rng, params, resolver, None).await
+    }
+
+    /// Prove with a request-owned memory policy and cancellation token.
+    /// Only ZKIR implementations that opt in to `Zkir::prove_with_context`
+    /// can use this entry point.
+    pub async fn prove_with_context<Z: Zkir>(
+        &self,
+        rng: impl Rng + CryptoRng,
+        params: &impl ParamsProverProvider,
+        resolver: &impl Resolver,
+        context: &ProverContext,
+    ) -> Result<(Proof, Vec<Option<usize>>), ProvingError> {
+        self.prove_inner::<Z>(rng, params, resolver, Some(context))
+            .await
+    }
+
+    async fn prove_inner<Z: Zkir>(
+        &self,
+        rng: impl Rng + CryptoRng,
+        params: &impl ParamsProverProvider,
+        resolver: &impl Resolver,
+        context: Option<&ProverContext>,
+    ) -> Result<(Proof, Vec<Option<usize>>), ProvingError> {
+        if context.is_some_and(ProverContext::is_cancelled) {
+            return Err(midnight_proofs::plonk::ProveWithPolicyError::Cancelled {
+                phase: "preimage.resolve_key",
+            }
+            .into());
+        }
         let proof_data = resolver
             .resolve_key(self.key_location.clone())
             .await?
@@ -768,7 +980,16 @@ impl ProofPreimage {
         let verifier_key = tagged_deserialize::<VerifierKey>(&mut &proof_data.verifier_key[..])?;
         let prover_key =
             Z::load_prover_key_from_tagged(io::Cursor::new(&proof_data.prover_key[..]))?;
-        let (proof, pis, pi_skips) = ir.prove(rng, params, prover_key, self).await?;
+        // The decoded key owns its columns. Release the request's serialized
+        // buffers before the much larger proving allocations begin.
+        drop(proof_data);
+        let (proof, pis, pi_skips) = match context {
+            Some(context) => {
+                ir.prove_with_context(rng, params, prover_key, self, context)
+                    .await?
+            }
+            None => ir.prove(rng, params, prover_key, self).await?,
+        };
         debug!("proof created; verifying to make sure");
         let k = verifier_key.force_init()?.k();
         if let Err(e) = verifier_key.verify(
