@@ -12,6 +12,8 @@ This contribution series starts from the official `ledger-9.1.0.1` tag. It pins 
 
 `--trusted-mmap-dir` controls the universal-parameter companion directory separately from `--v3-spill-dir`, which controls temporary mapped key and coset files. The server rejects a spill directory with `heap` policy. Native mapped storage requires a native target and the `native-memory` build feature; Wasm remains on heap behavior even if that feature is enabled.
 
+Queue capacity counts closures still held by the work channel, including jobs whose status records were cancelled or expired. A worker releases a slot when it dequeues and drops the work item; garbage collection alone cannot admit replacement bodies while old queued work still retains memory. The configured ingress limit independently caps simultaneous body readers. Set both limits for the expected proof-server load; capacity `0` retains the explicit unlimited-queue mode.
+
 ## Delivery gates
 
 - Preserve released per-`k` artifact behavior and serialized proof/key formats for Ledger9.
