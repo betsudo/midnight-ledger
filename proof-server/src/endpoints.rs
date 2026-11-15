@@ -31,6 +31,7 @@ use ledger::structure::{
     INITIAL_TRANSACTION_COST_MODEL, ProofPreimageMarker, ProofPreimageVersioned, ProofVersioned,
     Signature, Transaction,
 };
+use midnight_proofs::config::ProverConfig;
 use rand::rngs::OsRng;
 use serialize::{tagged_deserialize, tagged_serialize};
 use std::borrow::Cow;
@@ -311,6 +312,7 @@ pub(crate) async fn prove(
     request: HttpRequest,
     pool: Data<Arc<WorkerPool>>,
     ingress: Data<Arc<IngressState>>,
+    v3_policy: Data<Option<ProverConfig>>,
     payload: Payload,
 ) -> Result<HttpResponse, Error> {
     info!("Starting to process request for /prove...");
@@ -325,6 +327,7 @@ pub(crate) async fn prove(
 
     let data = data.map(Arc::new);
     let data_resolver = data.clone();
+    let v3_policy = v3_policy.get_ref().clone();
     let (_id, updates) = pool
         .submit_and_subscribe(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
@@ -371,9 +374,14 @@ pub(crate) async fn prove(
                             ),
                         };
 
-                        let proof = versioned_ir::prove(ppi, &proving_data.ir_source, &resolver)
-                            .await?
-                            .0;
+                        let proof = versioned_ir::prove(
+                            ppi,
+                            &proving_data.ir_source,
+                            &resolver,
+                            v3_policy.as_ref(),
+                        )
+                        .await?
+                        .0;
 
                         ProofVersioned::V2(proof)
                     }

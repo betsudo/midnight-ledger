@@ -6,6 +6,10 @@ with `zswap` being tracked in [Changelog Zswap](./CHANGELOG_zswap.md).
 
 ## Unreleased
 
+- feat: add an explicit, opt-in V3 proof-server memory policy for mapped
+  proving keys and k-gated coset spilling. The default and V2 paths retain
+  their compatibility behavior; malformed key bytes and native storage
+  failures preserve separate client/server error provenance.
 - feat: the proof server can opt into trusted, read-only mapped universal
   parameters with the `native-memory` feature on native targets; its default
   and WebAssembly paths use heap loading. Parameter load failures retain

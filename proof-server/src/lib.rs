@@ -18,6 +18,7 @@ use actix_web::dev::Server;
 use actix_web::middleware::Logger;
 use actix_web::web::{self, Data};
 use actix_web::{App, HttpServer};
+use midnight_proofs::config::ProverConfig;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Semaphore;
@@ -64,6 +65,18 @@ pub fn server_with_ingress_config(
     pool: WorkerPool,
     ingress_config: IngressConfig,
 ) -> std::io::Result<(Server, u16)> {
+    server_with_proving_config(port, fetch_params, pool, ingress_config, None)
+}
+
+/// Start a server with an optional explicit V3 proving policy. `None` keeps
+/// the released compatibility entry point and its heap defaults.
+pub fn server_with_proving_config(
+    port: u16,
+    fetch_params: bool,
+    pool: WorkerPool,
+    ingress_config: IngressConfig,
+    v3_policy: Option<ProverConfig>,
+) -> std::io::Result<(Server, u16)> {
     if ingress_config.max_body_bytes == 0
         || ingress_config.max_inflight == 0
         || ingress_config.read_timeout.is_zero()
@@ -72,6 +85,9 @@ pub fn server_with_ingress_config(
             std::io::ErrorKind::InvalidInput,
             "ingress limits must be positive",
         ));
+    }
+    if let Some(policy) = &v3_policy {
+        policy.ensure_supported()?;
     }
     let pool = Arc::new(pool);
     let ingress = Arc::new(IngressState {
@@ -82,6 +98,7 @@ pub fn server_with_ingress_config(
         let app = App::new()
             .app_data(Data::new(pool.clone()))
             .app_data(Data::new(ingress.clone()))
+            .app_data(Data::new(v3_policy.clone()))
             .service(prove_transaction)
             .service(prove)
             .service(check)

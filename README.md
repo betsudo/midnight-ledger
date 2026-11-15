@@ -141,6 +141,7 @@ Some of these rust crates use feature flags. For the most part, using default fe
 | `proof-verifying` | Enables proof verifications. Enabled by default, except in the wasm targets, as this embeds verifier keys into binary artifacts and artifact size is a concern there. |
 | `proptest` | Enables property testing implementations. Enabled by default for crate tests. |
 | `proving` | Enables proofs in tests and benchmarks. Note that the library *will* have proving capability, even when not enabled. |
+| `native-memory` | Makes native mapped proving storage available to opt-in callers; default and Wasm proving remain on the released heap path. |
 | `stress-test` | Enables expensive storage tests. |
 | `sqlite` | Enables the [SQLite](https://sqlite.org) storage backend. |
 | `test-utilities` | Enables testing helpers in the `ledger` crate. |
@@ -163,6 +164,17 @@ In addition to the rust crates, there are some notable directories and files cap
 | `flake.nix` | Nix build specification and devshell specification |
 
 ## Advanced Usage
+
+### Proof server V3 native storage
+
+Build the proof server with `--features native-memory` and select
+`--v3-memory-policy mapped-key` or `mapped-key-and-cosets` at startup. The
+second policy also accepts `--v3-coset-spill-floor-k` (default 18). Use
+`--v3-spill-dir` to place temporary mapped files on an operator-managed volume;
+the directory must exist and be writable. The default policy is `heap`, and
+V2 proving retains its compatibility route. `--trusted-mmap-dir` separately
+selects trusted, read-only universal parameter companions. Native storage is
+unavailable on Wasm targets even if the feature is enabled.
 
 ### Running benchmarks
 

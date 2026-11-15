@@ -13,14 +13,15 @@
 
 #![deny(unreachable_pub)]
 #![deny(warnings)]
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 
 use base_crypto::data_provider::{FetchMode, MidnightDataProvider, OutputMode};
 use futures::future::join;
 use ledger::dust::DustResolver;
 use ledger::prove::Resolver;
 use midnight_proof_server::endpoints::PUBLIC_PARAMS;
-use midnight_proof_server::{IngressConfig, server_with_ingress_config, worker_pool::WorkerPool};
+use midnight_proof_server::{IngressConfig, server_with_proving_config, worker_pool::WorkerPool};
+use midnight_proofs::config::{DEFAULT_COSET_SPILL_FLOOR_K, ProverConfig};
 use tracing::{Level, info};
 use tracing_subscriber::filter::Targets;
 use tracing_subscriber::layer::SubscriberExt;
@@ -31,6 +32,13 @@ use transient_crypto::proofs::TrustedParamsDir;
 use transient_crypto::proofs::{KeyLocation, Resolver as ResolverT};
 #[cfg(all(feature = "native-memory", not(target_family = "wasm")))]
 use zswap::prove::ZswapResolver;
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum V3MemoryPolicy {
+    Heap,
+    MappedKey,
+    MappedKeyAndCosets,
+}
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -75,12 +83,99 @@ struct Args {
     /// be changed by another process while this server is running.
     #[arg(long, env = "MIDNIGHT_PROOF_SERVER_TRUSTED_MMAP_DIR")]
     trusted_mmap_dir: Option<std::path::PathBuf>,
+    /// V3 proving-key and coset storage. V2 keeps its compatibility path.
+    #[arg(
+        long,
+        value_enum,
+        default_value = "heap",
+        env = "MIDNIGHT_PROOF_SERVER_V3_MEMORY_POLICY"
+    )]
+    v3_memory_policy: V3MemoryPolicy,
+    /// Temporary volume for V3 mapped-key and coset storage.
+    #[arg(long, env = "MIDNIGHT_PROOF_SERVER_V3_SPILL_DIR")]
+    v3_spill_dir: Option<std::path::PathBuf>,
+    /// Minimum V3 circuit k at which the selected coset policy spills.
+    #[arg(long, default_value_t = DEFAULT_COSET_SPILL_FLOOR_K, env = "MIDNIGHT_PROOF_SERVER_V3_COSET_SPILL_FLOOR_K")]
+    v3_coset_spill_floor_k: u32,
+}
+
+impl Args {
+    fn v3_policy(&self) -> std::io::Result<Option<ProverConfig>> {
+        let mut policy = match self.v3_memory_policy {
+            V3MemoryPolicy::Heap => {
+                if self.v3_spill_dir.is_some() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "V3 spill directory requires a mapped V3 memory policy",
+                    ));
+                }
+                return Ok(None);
+            }
+            V3MemoryPolicy::MappedKey => ProverConfig::mapped_key(),
+            V3MemoryPolicy::MappedKeyAndCosets => ProverConfig::mapped_key_and_cosets(),
+        };
+        if !cfg!(all(feature = "native-memory", not(target_family = "wasm"))) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "mapped V3 proving requires native-memory on a native target",
+            ));
+        }
+        policy.spill_dir = self.v3_spill_dir.clone();
+        policy.coset_spill_floor_k = self.v3_coset_spill_floor_k;
+        policy.ensure_supported()?;
+        Ok(Some(policy))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_policy_keeps_the_compatibility_route() {
+        let args = Args::try_parse_from(["proof-server"]).expect("default CLI");
+        assert!(args.v3_policy().expect("default policy").is_none());
+    }
+
+    #[test]
+    fn mapped_policy_requires_native_support() {
+        let args = Args::try_parse_from([
+            "proof-server",
+            "--v3-memory-policy",
+            "mapped-key-and-cosets",
+            "--v3-coset-spill-floor-k",
+            "20",
+        ])
+        .expect("mapped CLI");
+        let result = args.v3_policy();
+        if cfg!(all(feature = "native-memory", not(target_family = "wasm"))) {
+            let policy = result
+                .expect("supported native policy")
+                .expect("explicit policy");
+            assert!(policy.map_prover_key);
+            assert!(policy.spill_cosets);
+            assert_eq!(policy.coset_spill_floor_k, 20);
+        } else {
+            assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::Unsupported);
+        }
+    }
+
+    #[test]
+    fn spill_directory_needs_an_explicit_policy() {
+        let args =
+            Args::try_parse_from(["proof-server", "--v3-spill-dir", "/tmp"]).expect("spill CLI");
+        assert_eq!(
+            args.v3_policy().unwrap_err().kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+    }
 }
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     let args = Args::parse();
     init_logging(args.verbose);
+    let v3_policy = args.v3_policy()?;
     #[cfg(not(all(feature = "native-memory", not(target_family = "wasm"))))]
     if args.trusted_mmap_dir.is_some() {
         return Err(std::io::Error::new(
@@ -155,7 +250,7 @@ async fn main() -> std::io::Result<()> {
         max_inflight: args.max_ingress,
         read_timeout: std::time::Duration::from_secs(args.body_read_timeout_secs),
     };
-    server_with_ingress_config(args.port, !args.no_fetch_params, pool, ingress)?
+    server_with_proving_config(args.port, !args.no_fetch_params, pool, ingress, v3_policy)?
         .0
         .await
 }
