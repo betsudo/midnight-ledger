@@ -93,72 +93,6 @@ fn lock_with_context<'a, T>(
     }
 }
 
-#[cfg(test)]
-mod key_build_gate_tests {
-    use super::*;
-    use midnight_proofs::config::CancelToken;
-    use std::sync::mpsc;
-
-    #[test]
-    fn queued_request_can_cancel_while_another_builder_holds_admission() {
-        let gate = Arc::new(Mutex::new(()));
-        let active = gate.lock().expect("hold build admission");
-        let token = CancelToken::new();
-        let context = ProverContext::new(ProverConfig::heap()).with_cancel(token.clone());
-        let (started_tx, started_rx) = mpsc::channel();
-        let waiting_gate = gate.clone();
-        let waiter = std::thread::spawn(move || {
-            started_tx.send(()).expect("announce waiter");
-            lock_with_context(&waiting_gate, Some(&context), "prover_key.wait").map(|_| ())
-        });
-        started_rx.recv().expect("waiter started");
-        std::thread::sleep(Duration::from_millis(25));
-        token.cancel();
-        let error = waiter
-            .join()
-            .expect("waiter thread")
-            .expect_err("cancelled waiter must leave the queue");
-        assert!(matches!(
-            error.downcast_ref::<midnight_proofs::plonk::ProveWithPolicyError>(),
-            Some(midnight_proofs::plonk::ProveWithPolicyError::Cancelled {
-                phase: "prover_key.wait"
-            })
-        ));
-        assert!(gate.try_lock().is_err(), "active builder still owns gate");
-        drop(active);
-        assert!(gate.try_lock().is_ok(), "admission remains reusable");
-    }
-
-    #[test]
-    fn per_key_lock_wait_is_cancellable() {
-        let key_mutex = Arc::new(Mutex::new(vec![1u8]));
-        let active = key_mutex.lock().expect("hold key lock");
-        let token = CancelToken::new();
-        let context = ProverContext::new(ProverConfig::heap()).with_cancel(token.clone());
-        let (started_tx, started_rx) = mpsc::channel();
-        let waiting_mutex = key_mutex.clone();
-        let waiter = std::thread::spawn(move || {
-            started_tx.send(()).expect("announce waiter");
-            lock_with_context(&waiting_mutex, Some(&context), "prover_key.lock").map(|_| ())
-        });
-        started_rx.recv().expect("waiter started");
-        std::thread::sleep(Duration::from_millis(25));
-        token.cancel();
-        let error = waiter
-            .join()
-            .expect("waiter thread")
-            .expect_err("cancelled waiter must leave the key lock queue");
-        assert!(matches!(
-            error.downcast_ref::<midnight_proofs::plonk::ProveWithPolicyError>(),
-            Some(midnight_proofs::plonk::ProveWithPolicyError::Cancelled {
-                phase: "prover_key.lock"
-            })
-        ));
-        drop(active);
-        assert!(key_mutex.try_lock().is_ok(), "key lock remains reusable");
-    }
-}
-
 impl<T: Zkir> InnerProverKey<T> {
     fn try_cache(&mut self) {
         let hash = match self {
@@ -401,5 +335,71 @@ impl<T: Zkir> ProverKey<T> {
             }
             InnerProverKey::Initialized(key) => T::write_raw_pk(&mut writer, key),
         }
+    }
+}
+
+#[cfg(test)]
+mod key_build_gate_tests {
+    use super::*;
+    use midnight_proofs::config::CancelToken;
+    use std::sync::mpsc;
+
+    #[test]
+    fn queued_request_can_cancel_while_another_builder_holds_admission() {
+        let gate = Arc::new(Mutex::new(()));
+        let active = gate.lock().expect("hold build admission");
+        let token = CancelToken::new();
+        let context = ProverContext::new(ProverConfig::heap()).with_cancel(token.clone());
+        let (started_tx, started_rx) = mpsc::channel();
+        let waiting_gate = gate.clone();
+        let waiter = std::thread::spawn(move || {
+            started_tx.send(()).expect("announce waiter");
+            lock_with_context(&waiting_gate, Some(&context), "prover_key.wait").map(|_| ())
+        });
+        started_rx.recv().expect("waiter started");
+        std::thread::sleep(Duration::from_millis(25));
+        token.cancel();
+        let error = waiter
+            .join()
+            .expect("waiter thread")
+            .expect_err("cancelled waiter must leave the queue");
+        assert!(matches!(
+            error.downcast_ref::<midnight_proofs::plonk::ProveWithPolicyError>(),
+            Some(midnight_proofs::plonk::ProveWithPolicyError::Cancelled {
+                phase: "prover_key.wait"
+            })
+        ));
+        assert!(gate.try_lock().is_err(), "active builder still owns gate");
+        drop(active);
+        assert!(gate.try_lock().is_ok(), "admission remains reusable");
+    }
+
+    #[test]
+    fn per_key_lock_wait_is_cancellable() {
+        let key_mutex = Arc::new(Mutex::new(vec![1u8]));
+        let active = key_mutex.lock().expect("hold key lock");
+        let token = CancelToken::new();
+        let context = ProverContext::new(ProverConfig::heap()).with_cancel(token.clone());
+        let (started_tx, started_rx) = mpsc::channel();
+        let waiting_mutex = key_mutex.clone();
+        let waiter = std::thread::spawn(move || {
+            started_tx.send(()).expect("announce waiter");
+            lock_with_context(&waiting_mutex, Some(&context), "prover_key.lock").map(|_| ())
+        });
+        started_rx.recv().expect("waiter started");
+        std::thread::sleep(Duration::from_millis(25));
+        token.cancel();
+        let error = waiter
+            .join()
+            .expect("waiter thread")
+            .expect_err("cancelled waiter must leave the key lock queue");
+        assert!(matches!(
+            error.downcast_ref::<midnight_proofs::plonk::ProveWithPolicyError>(),
+            Some(midnight_proofs::plonk::ProveWithPolicyError::Cancelled {
+                phase: "prover_key.lock"
+            })
+        ));
+        drop(active);
+        assert!(key_mutex.try_lock().is_ok(), "key lock remains reusable");
     }
 }
