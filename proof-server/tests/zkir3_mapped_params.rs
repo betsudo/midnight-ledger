@@ -341,6 +341,31 @@ async fn release_source_v3_key_and_proof_remain_usable() {
             .verify(&verifier_params, &proof, public_inputs.into_iter())
             .expect("verify proof from release-source V3 key");
     }
+
+    #[cfg(feature = "native-memory")]
+    {
+        // The key was initialized above. Spilling cosets alone must not
+        // require it to be deserialized again or change its heap backing.
+        let mut spill_only = ProverConfig::heap();
+        spill_only.spill_cosets = true;
+        spill_only.coset_spill_floor_k = 0;
+        spill_only.spill_dir = Some(spill_dir.path().to_path_buf());
+        let (proof, _, _) = resolver
+            .ir
+            .prove_with_context(
+                ChaCha20Rng::from_seed([43; 32]),
+                &params,
+                resolver.pk.clone(),
+                &preimage,
+                &ProverContext::new(spill_only),
+            )
+            .await
+            .expect("prove with initialized heap key and spilled cosets");
+        resolver
+            .vk
+            .verify(&verifier_params, &proof, public_inputs.into_iter())
+            .expect("verify proof with spilled cosets");
+    }
 }
 
 #[test]
