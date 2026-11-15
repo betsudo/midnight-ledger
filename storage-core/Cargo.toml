@@ -45,6 +45,9 @@ proptest-derive = { version = "0.8", optional = true }
 lru = "0.18.0"
 # Bundled SQLite and the connection pool must resolve one libsqlite3-sys
 # version. These paired versions include the fix for RUSTSEC-2026-0459.
+# The downstream PC consumer also links SQLite and must upgrade its SQLite
+# dependencies together with this line before using both in one Cargo graph.
+# See https://github.com/midnightntwrk/midnight-ledger-prototype/pull/431.
 rusqlite = { version = "0.41.0", features = ["bundled"], optional = true }
 r2d2_sqlite = { version = "0.36.0", optional = true }
 # This is a dep of r2d2_sqlite, which will determine the version.
