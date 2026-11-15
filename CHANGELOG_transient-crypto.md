@@ -1,5 +1,16 @@
 # `transient-crypto` Changelog
 
+## Unreleased
+
+- feat: add an explicit per-request ZKIR v3 prover context and native mapped
+  parameter provider, while retaining the existing proving interface and a
+  heap-only WebAssembly path.
+- fix: validate trusted immutable parameter companions before reuse, publish
+  them without replacing existing files, and honor the requested load policy
+  on cache misses.
+- fix: release the serialized prover-key buffer after decoding so it is not
+  retained for the duration of proof generation.
+
 ## Version `3.0.1`
 
 - feat: `MerkleTree::fold` combines a function over a tree's leaves in time
