@@ -3094,6 +3094,7 @@ dependencies = [
  "ff 0.13.1",
  "flate2",
  "futures",
+ "getrandom 0.3.4",
  "group 0.13.0",
  "indicatif",
  "k256 0.14.0",
@@ -3234,8 +3235,7 @@ dependencies = [
 [[package]]
 name = "midnight-curves"
 version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "efaa236cfabccb367c0a89e58a6e8f0b4ba70fb81efd07acfe1d3a0ec3bed081"
+source = "git+https://github.com/betsudo/midnight-zk?rev=5f75b85ee5b58046b3fec81ca86d5b95a9140f4a#5f75b85ee5b58046b3fec81ca86d5b95a9140f4a"
 dependencies = [
  "bitvec",
  "blst",
@@ -3508,14 +3508,15 @@ dependencies = [
 [[package]]
 name = "midnight-proofs"
 version = "0.8.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22b1526bc7d9d1fad29505a15b81fe54aa7698a7dcd1948b447021bc8571f543"
+source = "git+https://github.com/betsudo/midnight-zk?rev=5f75b85ee5b58046b3fec81ca86d5b95a9140f4a#5f75b85ee5b58046b3fec81ca86d5b95a9140f4a"
 dependencies = [
  "blake2b_simd",
  "ff 0.13.1",
  "getrandom 0.2.17",
  "group 0.13.0",
  "itertools 0.14.0",
+ "libc",
+ "memmap2",
  "midnight-curves 0.3.1",
  "num-bigint",
  "rand_chacha 0.3.1",
@@ -3523,6 +3524,7 @@ dependencies = [
  "rayon",
  "serde",
  "serde_derive",
+ "tempfile",
  "tracing",
 ]
 
@@ -3734,6 +3736,7 @@ dependencies = [
  "group 0.13.0",
  "lazy_static",
  "lru",
+ "memmap2",
  "midnight-base-crypto",
  "midnight-base-crypto-derive 1.1.0",
  "midnight-circuits 7.3.0",
@@ -3754,6 +3757,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "subtle",
+ "tempfile",
  "tracing",
  "tracing-subscriber",
  "zeroize",
@@ -3785,8 +3789,7 @@ dependencies = [
 [[package]]
 name = "midnight-zk-stdlib"
 version = "2.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "73819f4cd779e365545109dbbd759fe0055df4ea73f6e0ddb873281c1c8014ec"
+source = "git+https://github.com/betsudo/midnight-zk?rev=5f75b85ee5b58046b3fec81ca86d5b95a9140f4a#5f75b85ee5b58046b3fec81ca86d5b95a9140f4a"
 dependencies = [
  "base64 0.13.1",
  "bincode 2.0.1",
