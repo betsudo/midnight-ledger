@@ -260,10 +260,17 @@ impl<T: Zkir> ProverKey<T> {
                 InnerProverKey::Invalid(_) => {
                     return Err(anyhow::anyhow!("known invalid prover key"));
                 }
-                InnerProverKey::Initialized(_) => {
-                    return Err(anyhow::anyhow!(
-                        "explicit memory policy requires a serialized prover key"
-                    ));
+                InnerProverKey::Initialized(key) => {
+                    // No load occurs for an already initialized key. The heap
+                    // policy can reuse it, but a mapped request must start
+                    // from bytes so its storage choice is actually honored.
+                    if *policy != ProverConfig::heap() {
+                        return Err(anyhow::anyhow!(
+                            "mapped memory policy requires a serialized prover key"
+                        ));
+                    }
+                    check_key_cancelled(context, "prover_key.init")?;
+                    return Ok(key.clone());
                 }
             }
         };
@@ -293,10 +300,14 @@ impl<T: Zkir> ProverKey<T> {
             InnerProverKey::Invalid(_) => {
                 return Err(anyhow::anyhow!("known invalid prover key"));
             }
-            InnerProverKey::Initialized(_) => {
-                return Err(anyhow::anyhow!(
-                    "explicit memory policy requires a serialized prover key"
-                ));
+            InnerProverKey::Initialized(key) => {
+                if *policy != ProverConfig::heap() {
+                    return Err(anyhow::anyhow!(
+                        "mapped memory policy requires a serialized prover key"
+                    ));
+                }
+                check_key_cancelled(context, "prover_key.init")?;
+                return Ok(key.clone());
             }
         }
         let key = Arc::new(T::read_raw_pk_with_policy(&data[..], policy)?);
