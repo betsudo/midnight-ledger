@@ -69,10 +69,10 @@ panic = "abort"
 [patch.crates-io]
 # The released Ledger9 proof line is 0.8.2. Pin the reviewed native-storage
 # change by commit so checkout branch changes cannot silently drop the patch.
-midnight-proofs = { git = "https://github.com/betsudo/midnight-zk", rev = "6529eaa4e689bb824bd1a4ca6c543cd64f6eb817" }
-midnight-zk-stdlib = { git = "https://github.com/betsudo/midnight-zk", rev = "6529eaa4e689bb824bd1a4ca6c543cd64f6eb817" }
-midnight-curves = { git = "https://github.com/betsudo/midnight-zk", rev = "6529eaa4e689bb824bd1a4ca6c543cd64f6eb817" }
-midnight-zkir = { git = "https://github.com/betsudo/midnight-zkir", rev = "7d89518cea395d83802693e33ff99faf1f0902b1" }
+midnight-proofs = { git = "https://github.com/betsudo/midnight-zk", rev = "505156ec0987c98ead6908d5418b9fb827595e2b" }
+midnight-zk-stdlib = { git = "https://github.com/betsudo/midnight-zk", rev = "505156ec0987c98ead6908d5418b9fb827595e2b" }
+midnight-curves = { git = "https://github.com/betsudo/midnight-zk", rev = "505156ec0987c98ead6908d5418b9fb827595e2b" }
+midnight-zkir = { git = "https://github.com/betsudo/midnight-zkir", rev = "3e980fbe86aa3907c5ed1f3af7a359cc97454428" }
 midnight-base-crypto = { path = "base-crypto" }
 midnight-serialize = { path = "serialize" }
 # The pinned midnight-zkir asks crates.io for transient-crypto 3.0.0, which is
