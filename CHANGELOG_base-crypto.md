@@ -1,5 +1,10 @@
 # `base-crypto` Changelog
 
+## Unreleased
+
+- fix: enable browser entropy for the WebAssembly dependency graph without
+  selecting it on native targets.
+
 ## Version `1.1.1`
 
 - security: `FixedPoint::from_u64_div` saturates to `FixedPoint::MAX` instead of
