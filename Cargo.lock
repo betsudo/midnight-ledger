@@ -3893,7 +3893,7 @@ dependencies = [
 [[package]]
 name = "midnight-zkir"
 version = "3.2.1"
-source = "git+https://github.com/betsudo/midnight-zkir?rev=e636ab3976c2f8fc128bb875c3a77bacbc0baefe#e636ab3976c2f8fc128bb875c3a77bacbc0baefe"
+source = "git+https://github.com/betsudo/midnight-zkir?rev=33d6539f73740cbc2afecdd18875fe5441a00335#33d6539f73740cbc2afecdd18875fe5441a00335"
 dependencies = [
  "anyhow",
  "const-hex",
