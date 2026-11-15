@@ -176,6 +176,8 @@ V2 proving retains its compatibility route. `--trusted-mmap-dir` separately
 selects trusted, read-only universal parameter companions. Native storage is
 unavailable on Wasm targets even if the feature is enabled.
 
+See [Ledger9 optimization integration](docs/ledger9-optimization.md) for the request path and release gates, and [branch naming](docs/branching.md) for this and later release-line upgrades.
+
 ### Running benchmarks
 
 The ledger comes with a suite of benchmarks for various basic operations. These
