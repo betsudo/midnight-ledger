@@ -15,7 +15,7 @@ parameters and, without a policy selector, proves twice. Run it explicitly
 from the Ledger workspace:
 
 ```sh
-cargo test -p midnight-proof-server --test zkir3_mapped_params \
+cargo test -p midnight-proof-server --features native-memory --test zkir3_mapped_params \
   compact_generated_zkir3_hash_chain_proof_timing --locked -- \
   --ignored --exact --nocapture
 ```
@@ -37,7 +37,7 @@ separate processes and retain the `maximum resident set size` output:
 ```sh
 CARGO_PROFILE_TEST_DEBUG=0 CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=.codex-target \
   cargo test --offline --locked -p midnight-proof-server \
-  --test zkir3_mapped_params --no-run
+  --features native-memory --test zkir3_mapped_params --no-run
 test_bin=$(find .codex-target/debug/deps -maxdepth 1 -type f -perm -111 \
   -name 'zkir3_mapped_params-*' -print -quit)
 RUST_TEST_THREADS=1 /usr/bin/time -l "$test_bin" \

@@ -25,6 +25,7 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::Instant;
 
+#[cfg(feature = "native-memory")]
 use base_crypto::data_provider::MidnightDataProvider;
 use midnight_curves::Bls12;
 use midnight_proofs::config::{ProverConfig, ProverContext};
@@ -35,10 +36,11 @@ use rand_chacha::ChaCha20Rng;
 use serialize::{Serializable, Tagged, tagged_deserialize, tagged_serialize};
 use transient_crypto::curve::Fr;
 use transient_crypto::hash::transient_commit;
+#[cfg(feature = "native-memory")]
+use transient_crypto::proofs::{CompanionCache, MappedParams, TrustedParamsDir};
 use transient_crypto::proofs::{
-    CompanionCache, KeyLocation, MappedParams, ParamsProver, ParamsProverProvider, ParamsVerifier,
-    Proof, ProofPreimage, ProverKey, ProvingKeyMaterial, Resolver, TrustedParamsDir, VerifierKey,
-    Zkir,
+    KeyLocation, ParamsProver, ParamsProverProvider, ParamsVerifier, Proof, ProofPreimage,
+    ProverKey, ProvingKeyMaterial, Resolver, VerifierKey, Zkir,
 };
 use zkir_v3::IrSource;
 
@@ -50,8 +52,10 @@ impl ParamsProverProvider for HeapParams {
     }
 }
 
+#[cfg(feature = "native-memory")]
 struct NoFallback;
 
+#[cfg(feature = "native-memory")]
 impl ParamsProverProvider for NoFallback {
     async fn get_params(&self, _k: u8) -> io::Result<ParamsProver> {
         panic!("mapped companion was not selected")
@@ -306,12 +310,22 @@ async fn release_source_v3_key_and_proof_remain_usable() {
     assert_eq!(reencoded_key, key_bytes, "proving-key format changed");
     let params = HeapParams(ParamsProver::read(&params_bytes[..]).expect("read prover parameters"));
     let resolver = KeyResolver { pk, vk, ir };
+    #[cfg(feature = "native-memory")]
+    let mut policies = vec![ProverConfig::heap()];
+    #[cfg(not(feature = "native-memory"))]
+    let policies = vec![ProverConfig::heap()];
+    #[cfg(feature = "native-memory")]
     let spill_dir = tempfile::tempdir().expect("private spill directory");
+    #[cfg(feature = "native-memory")]
     let mut mapped = ProverConfig::mapped_key_and_cosets();
-    mapped.coset_spill_floor_k = 0;
-    mapped.spill_dir = Some(spill_dir.path().to_path_buf());
-    assert!(mapped.spills_cosets_at(resolver.ir.k() as u32));
-    for policy in [ProverConfig::heap(), mapped] {
+    #[cfg(feature = "native-memory")]
+    {
+        mapped.coset_spill_floor_k = 0;
+        mapped.spill_dir = Some(spill_dir.path().to_path_buf());
+        assert!(mapped.spills_cosets_at(resolver.ir.k() as u32));
+        policies.push(mapped);
+    }
+    for policy in policies {
         let context = ProverContext::new(policy);
         let (proof, _) = preimage
             .prove_with_context::<IrSource>(
@@ -446,24 +460,27 @@ async fn exercise_heap_and_mapped(
             )
             .expect("verify explicit-context v3 proof");
 
-        let spill_dir = tempfile::tempdir().expect("private v3 spill dir");
-        let mut policy = ProverConfig::mapped_key_and_cosets();
-        policy.coset_spill_floor_k = 0;
-        policy.spill_dir = Some(spill_dir.path().to_path_buf());
-        assert!(policy.spills_cosets_at(k as u32));
-        let mapped_context = ProverContext::new(policy);
-        let (optimized_proof, _) = preimage
-            .prove_with_context::<IrSource>(rng(), &heap, &resolver, &mapped_context)
-            .await
-            .expect("mapped-key and coset-spill v3 proof");
-        resolver
-            .vk
-            .verify(
-                &verifier_params,
-                &optimized_proof,
-                public_inputs.iter().copied(),
-            )
-            .expect("verify mapped-key and coset-spill v3 proof");
+        #[cfg(feature = "native-memory")]
+        {
+            let spill_dir = tempfile::tempdir().expect("private v3 spill dir");
+            let mut policy = ProverConfig::mapped_key_and_cosets();
+            policy.coset_spill_floor_k = 0;
+            policy.spill_dir = Some(spill_dir.path().to_path_buf());
+            assert!(policy.spills_cosets_at(k as u32));
+            let mapped_context = ProverContext::new(policy);
+            let (optimized_proof, _) = preimage
+                .prove_with_context::<IrSource>(rng(), &heap, &resolver, &mapped_context)
+                .await
+                .expect("mapped-key and coset-spill v3 proof");
+            resolver
+                .vk
+                .verify(
+                    &verifier_params,
+                    &optimized_proof,
+                    public_inputs.iter().copied(),
+                )
+                .expect("verify mapped-key and coset-spill v3 proof");
+        }
     }
 
     if single_policy.as_deref() == Some("heap") {
@@ -475,59 +492,74 @@ async fn exercise_heap_and_mapped(
         return;
     }
 
-    let dir = tempfile::tempdir().expect("private companion dir");
-    // The test owns this temporary directory, publishes the companion only
-    // through CompanionCache, and keeps it immutable while mapped values live.
-    let trusted = unsafe { TrustedParamsDir::new(dir.path()) };
-    let cache = CompanionCache::from_trusted_dir(trusted.clone());
-    let name = MidnightDataProvider::name_k(k);
-    cache
-        .open_or_build(&name, || Ok(params))
-        .expect("publish companion");
-    let mapped = MappedParams::new(NoFallback, trusted);
-    let mapped_start = Instant::now();
-    let (mapped_proof, _) = if report_timing {
-        let spill_dir = tempfile::tempdir().expect("private V3 coset spill dir");
-        let mut policy = ProverConfig::mapped_key_and_cosets();
-        policy.coset_spill_floor_k = 0;
-        policy.spill_dir = Some(spill_dir.path().to_path_buf());
-        assert!(policy.spills_cosets_at(k as u32));
-        preimage
-            .prove_with_context::<IrSource>(rng(), &mapped, &resolver, &ProverContext::new(policy))
-            .await
-            .expect("mapped SRS/key and spilled-coset proof")
-    } else {
-        preimage
-            .prove::<IrSource>(rng(), &mapped, &resolver)
-            .await
-            .expect("mapped proof")
-    };
-    let mapped_elapsed = mapped_start.elapsed();
-    resolver
-        .vk
-        .verify(&verifier_params, &mapped_proof, public_inputs.into_iter())
-        .expect("verify mapped proof");
-    if !report_timing {
-        assert_eq!(
-            heap_result
-                .as_ref()
-                .expect("ordinary case includes heap proof")
-                .0,
-            mapped_proof
-        );
-    }
-    if report_timing {
-        if let Some((heap_proof, heap_elapsed)) = heap_result {
-            eprintln!(
-                "v3 hash chain k={k} rows={rows} heap_proof={heap_elapsed:?} mapped_srs_key_cosets_proof={mapped_elapsed:?} bytes={} identical={}",
-                heap_proof.0.len(),
-                heap_proof == mapped_proof,
-            );
+    #[cfg(not(feature = "native-memory"))]
+    assert_ne!(
+        single_policy.as_deref(),
+        Some("mapped"),
+        "mapped V3 proof requires native-memory"
+    );
+
+    #[cfg(feature = "native-memory")]
+    {
+        let dir = tempfile::tempdir().expect("private companion dir");
+        // The test owns this temporary directory, publishes the companion only
+        // through CompanionCache, and keeps it immutable while mapped values live.
+        let trusted = unsafe { TrustedParamsDir::new(dir.path()) };
+        let cache = CompanionCache::from_trusted_dir(trusted.clone());
+        let name = MidnightDataProvider::name_k(k);
+        cache
+            .open_or_build(&name, || Ok(params))
+            .expect("publish companion");
+        let mapped = MappedParams::new(NoFallback, trusted);
+        let mapped_start = Instant::now();
+        let (mapped_proof, _) = if report_timing {
+            let spill_dir = tempfile::tempdir().expect("private V3 coset spill dir");
+            let mut policy = ProverConfig::mapped_key_and_cosets();
+            policy.coset_spill_floor_k = 0;
+            policy.spill_dir = Some(spill_dir.path().to_path_buf());
+            assert!(policy.spills_cosets_at(k as u32));
+            preimage
+                .prove_with_context::<IrSource>(
+                    rng(),
+                    &mapped,
+                    &resolver,
+                    &ProverContext::new(policy),
+                )
+                .await
+                .expect("mapped SRS/key and spilled-coset proof")
         } else {
-            eprintln!(
-                "v3 hash chain k={k} rows={rows} policy=mapped proof={mapped_elapsed:?} bytes={}",
-                mapped_proof.0.len(),
+            preimage
+                .prove::<IrSource>(rng(), &mapped, &resolver)
+                .await
+                .expect("mapped proof")
+        };
+        let mapped_elapsed = mapped_start.elapsed();
+        resolver
+            .vk
+            .verify(&verifier_params, &mapped_proof, public_inputs.into_iter())
+            .expect("verify mapped proof");
+        if !report_timing {
+            assert_eq!(
+                heap_result
+                    .as_ref()
+                    .expect("ordinary case includes heap proof")
+                    .0,
+                mapped_proof
             );
+        }
+        if report_timing {
+            if let Some((heap_proof, heap_elapsed)) = heap_result {
+                eprintln!(
+                    "v3 hash chain k={k} rows={rows} heap_proof={heap_elapsed:?} mapped_srs_key_cosets_proof={mapped_elapsed:?} bytes={} identical={}",
+                    heap_proof.0.len(),
+                    heap_proof == mapped_proof,
+                );
+            } else {
+                eprintln!(
+                    "v3 hash chain k={k} rows={rows} policy=mapped proof={mapped_elapsed:?} bytes={}",
+                    mapped_proof.0.len(),
+                );
+            }
         }
     }
 }

@@ -26,11 +26,11 @@ use transient_crypto::proofs::{
     KeyLocation, ParamsProverProvider, Proof, ProofPreimage, ProverKey, ProvingError, Resolver,
     VerifierKey,
 };
-#[cfg(not(target_family = "wasm"))]
+#[cfg(all(feature = "native-memory", not(target_family = "wasm")))]
 use transient_crypto::proofs::{MappedParams, ParamsLoadPolicy, TrustedParamsDir};
 use transient_crypto::proofs::{ParamsProver, ProvingKeyMaterial, ProvingProvider};
 
-#[cfg(not(target_family = "wasm"))]
+#[cfg(all(feature = "native-memory", not(target_family = "wasm")))]
 static MAPPED_PARAMS_DIR: std::sync::OnceLock<TrustedParamsDir> = std::sync::OnceLock::new();
 
 /// Marks a parameter load failure as server-owned when it crosses the
@@ -57,7 +57,7 @@ impl ZswapResolver {
     /// Opt the process into a trusted, immutable mmap companion directory.
     /// Call during startup, before serving proof requests. All resolver
     /// instances in the process use the same universal SRS files by `k`.
-    #[cfg(not(target_family = "wasm"))]
+    #[cfg(all(feature = "native-memory", not(target_family = "wasm")))]
     pub fn configure_mapped_params_dir(dir: TrustedParamsDir) -> Result<(), TrustedParamsDir> {
         MAPPED_PARAMS_DIR.set(dir)
     }
@@ -120,7 +120,7 @@ impl Resolver for ZswapResolver {
 
 impl ParamsProverProvider for ZswapResolver {
     async fn get_params(&self, k: u8) -> std::io::Result<ParamsProver> {
-        #[cfg(not(target_family = "wasm"))]
+        #[cfg(all(feature = "native-memory", not(target_family = "wasm")))]
         if let Some(dir) = MAPPED_PARAMS_DIR.get() {
             return MappedParams::with_policy(
                 self.0.clone(),

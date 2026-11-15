@@ -7,8 +7,9 @@ with `zswap` being tracked in [Changelog Zswap](./CHANGELOG_zswap.md).
 ## Unreleased
 
 - feat: the proof server can opt into trusted, read-only mapped universal
-  parameters on native targets; its default and WebAssembly paths use heap
-  loading. Parameter load failures retain server-owned error provenance.
+  parameters with the `native-memory` feature on native targets; its default
+  and WebAssembly paths use heap loading. Parameter load failures retain
+  server-owned error provenance.
 - fix: bound request ingress before queue admission and preserve atomic
   pending-job admission under concurrent proving requests.
 - test: exercise the released ZKIR v3 key format, Compact-generated and

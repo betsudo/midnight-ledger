@@ -108,7 +108,7 @@ pub trait ParamsProverProvider {
     /// Retrieve parameters under an explicit load policy.
     ///
     /// Providers without a policy-aware loader retain their existing behavior
-    /// for eager loading and reject an explicit lazy request. [`MappedParams`]
+    /// for eager loading and reject an explicit lazy request. `MappedParams`
     /// forwards its policy through this method on a companion miss;
     /// `MidnightDataProvider` honors `lazy_params` here.
     #[allow(async_fn_in_trait)]
@@ -131,17 +131,17 @@ pub trait ParamsProverProvider {
 /// The hash used during proof transcript processing
 pub type TranscriptHash = blake2b_simd::State;
 
-#[cfg(not(target_family = "wasm"))]
+#[cfg(all(feature = "native-memory", not(target_family = "wasm")))]
 mod companion_cache;
-#[cfg(not(target_family = "wasm"))]
+#[cfg(all(feature = "native-memory", not(target_family = "wasm")))]
 pub use companion_cache::{CompanionCache, MappedParams, PublishOutcome, TrustedParamsDir};
 
 /// Parameters always load into memory this provider owns.
 ///
 /// Mapping a companion is not reachable from here, and no environment variable
-/// can make it reachable: it requires a [`TrustedParamsDir`], which requires an
+/// can make it reachable: it requires a `TrustedParamsDir`, which requires an
 /// `unsafe` block, which requires a caller willing to make the promise about a
-/// directory they chose. Wrap this provider in [`MappedParams`] to opt in.
+/// directory they chose. Wrap this provider in `MappedParams` to opt in.
 impl ParamsProverProvider for base_crypto::data_provider::MidnightDataProvider {
     async fn get_params(&self, k: u8) -> io::Result<ParamsProver> {
         load_midnight_params(self, k, ParamsLoadPolicy::process()).await
@@ -242,7 +242,7 @@ impl ParamsProver {
     /// hostile file therefore produces wrong proofs rather than memory
     /// corruption, and only because every bit pattern is valid for the
     /// underlying field representation.
-    #[cfg(not(target_family = "wasm"))]
+    #[cfg(all(feature = "native-memory", not(target_family = "wasm")))]
     #[allow(unsafe_code)]
     pub unsafe fn read_mmap_path<P: AsRef<std::path::Path>>(path: P) -> io::Result<Self> {
         let file = std::fs::File::open(path)?;
@@ -274,7 +274,7 @@ impl ParamsProver {
     /// Host-only for the same reason as [`read_mmap_path`](Self::read_mmap_path):
     /// writing a companion nothing on this target can map back is not a
     /// useful thing to be able to do.
-    #[cfg(not(target_family = "wasm"))]
+    #[cfg(all(feature = "native-memory", not(target_family = "wasm")))]
     pub fn write_mmap_companion<P: AsRef<std::path::Path>>(&self, path: P) -> io::Result<()> {
         let path = path.as_ref();
         let dir = path
