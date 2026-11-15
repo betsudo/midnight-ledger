@@ -29,9 +29,9 @@ The routing lives in [`proof-server/src/versioned_ir.rs`](../proof-server/src/ve
 [`transient-crypto/src/proofs/key_cache.rs`](../transient-crypto/src/proofs/key_cache.rs)
 owns policy-aware key admission. The storage primitives and unsafe mapped
 SRS reader live in
-[`midnight-zk`](https://github.com/betsudo/midnight-zk/blob/integration/ledger9/proofs-0.8.2/proofs/docs/ledger9-native-memory.md);
+[`midnight-zk`](https://github.com/betsudo/midnight-zk/blob/d530c2694ae2c366aed59a3d72259e23730b6586/proofs/docs/ledger9-native-memory.md);
 the V3 forwarding API lives in
-[`midnight-zkir`](https://github.com/betsudo/midnight-zkir/blob/integration/ledger9/zkir-3.2.1/docs/ledger9-v3-context.md).
+[`midnight-zkir`](https://github.com/betsudo/midnight-zkir/blob/556f3c4457a3b5e5ee544eca9e4893ebbde2b446/docs/ledger9-v3-context.md).
 
 ## Build and runtime policy
 
