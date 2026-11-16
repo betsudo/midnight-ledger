@@ -182,7 +182,7 @@ jobs:
         run: nix build .#zkir-wasm
 
       - name: Check Ledger9 Wasm with native-memory feature enabled
-        run: nix develop .#ci -c cargo check --locked --target wasm32-unknown-unknown -p midnight-ledger-wasm-v9 --features ledger/native-memory
+        run: nix develop -c cargo check --locked --target wasm32-unknown-unknown -p midnight-ledger-wasm-v9 --features ledger/native-memory
 
   # Inline matrix job (not a reusable-workflow call) so the check name stays
   # `integration-tests (ubuntu-latest)`. The steps live in a composite action
