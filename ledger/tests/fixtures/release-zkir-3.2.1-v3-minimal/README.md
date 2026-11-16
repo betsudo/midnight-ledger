@@ -29,6 +29,11 @@ byte-identical on regeneration; the hashes below identify the checked-in
 bytes. Keep the producer's lockfile on registry packages; a fork-patched
 producer would not establish release-source compatibility.
 
+The producer also accepts `MIDNIGHT_RELEASE_V3_PARAM` to read a verified
+official per-k parameter file instead of generating the seeded parameter.
+The separate [official k=4 fixture](../release-zkir-3.2.1-official-k4-minimal/README.md)
+records that provenance and its own key/proof bytes.
+
 | File under `minimal/` | SHA-256 |
 |---|---|
 | `zkir/minimal.zkir` | `789372be8426c8a60651d79920a8d90e062f484ed40a562da1f36bf6206eb391` |
