@@ -257,48 +257,90 @@ async fn compact_typescript_preimage_proves_and_verifies_with_native_ledger9() {
 // This is a release-source compatibility fixture, not a distributed key.
 #[actix_web::test]
 async fn release_source_v3_key_and_proof_remain_usable() {
-    let ir = IrSource::load(
-        &include_bytes!(concat!(
+    exercise_release_source_v3_fixture(
+        include_bytes!(concat!(
             "../../ledger/tests/fixtures/release-zkir-3.2.1-v3-minimal/minimal/",
             "zkir/minimal.zkir"
-        ))[..],
-    )
-    .expect("load release-source V3 IR");
-    let key_bytes = include_bytes!(concat!(
-        "../../ledger/tests/fixtures/release-zkir-3.2.1-v3-minimal/minimal/",
-        "keys/minimal.prover"
-    ));
-    let pk = <IrSource as Zkir>::load_prover_key_from_tagged(Cursor::new(&key_bytes[..]))
-        .expect("decode release-source V3 proving key");
-    pk.init().expect("initialize release-source V3 proving key");
-    let vk: VerifierKey = tagged_deserialize(
-        &mut &include_bytes!(concat!(
+        )),
+        include_bytes!(concat!(
+            "../../ledger/tests/fixtures/release-zkir-3.2.1-v3-minimal/minimal/",
+            "keys/minimal.prover"
+        )),
+        include_bytes!(concat!(
             "../../ledger/tests/fixtures/release-zkir-3.2.1-v3-minimal/minimal/",
             "keys/minimal.verifier"
-        ))[..],
-    )
-    .expect("decode release-source V3 verifier key");
-    vk.init()
-        .expect("initialize release-source V3 verifier key");
-    let preimage: ProofPreimage = tagged_deserialize(
-        &mut &include_bytes!(concat!(
+        )),
+        include_bytes!(concat!(
             "../../ledger/tests/fixtures/release-zkir-3.2.1-v3-minimal/minimal/",
             "preimage.bin"
-        ))[..],
-    )
-    .expect("decode release-source V3 preimage");
-    preimage.check(&ir).expect("preimage matches released IR");
-    let baseline_proof: Proof = tagged_deserialize(
-        &mut &include_bytes!(concat!(
+        )),
+        include_bytes!(concat!(
             "../../ledger/tests/fixtures/release-zkir-3.2.1-v3-minimal/minimal/",
             "proof.bin"
-        ))[..],
+        )),
+        include_bytes!(concat!(
+            "../../ledger/tests/fixtures/release-zkir-3.2.1-v3-minimal/minimal/",
+            "params.bin"
+        )),
     )
-    .expect("decode release-source V3 proof");
-    let params_bytes = include_bytes!(concat!(
-        "../../ledger/tests/fixtures/release-zkir-3.2.1-v3-minimal/minimal/",
-        "params.bin"
-    ));
+    .await;
+}
+
+// The same published-source producer used the official k=4 SRS from the
+// Ledger9 release manifest. The key is locally generated against that SRS;
+// it is not a network-distributed production key.
+#[actix_web::test]
+async fn release_source_v3_key_with_official_k4_params_remains_usable() {
+    exercise_release_source_v3_fixture(
+        include_bytes!(concat!(
+            "../../ledger/tests/fixtures/release-zkir-3.2.1-official-k4-minimal/minimal/",
+            "zkir/minimal.zkir"
+        )),
+        include_bytes!(concat!(
+            "../../ledger/tests/fixtures/release-zkir-3.2.1-official-k4-minimal/minimal/",
+            "keys/minimal.prover"
+        )),
+        include_bytes!(concat!(
+            "../../ledger/tests/fixtures/release-zkir-3.2.1-official-k4-minimal/minimal/",
+            "keys/minimal.verifier"
+        )),
+        include_bytes!(concat!(
+            "../../ledger/tests/fixtures/release-zkir-3.2.1-official-k4-minimal/minimal/",
+            "preimage.bin"
+        )),
+        include_bytes!(concat!(
+            "../../ledger/tests/fixtures/release-zkir-3.2.1-official-k4-minimal/minimal/",
+            "proof.bin"
+        )),
+        include_bytes!(concat!(
+            "../../ledger/tests/fixtures/release-zkir-3.2.1-official-k4-minimal/minimal/",
+            "params.bin"
+        )),
+    )
+    .await;
+}
+
+async fn exercise_release_source_v3_fixture(
+    ir_bytes: &[u8],
+    key_bytes: &[u8],
+    verifier_key_bytes: &[u8],
+    preimage_bytes: &[u8],
+    baseline_proof_bytes: &[u8],
+    params_bytes: &[u8],
+) {
+    let ir = IrSource::load(ir_bytes).expect("load release-source V3 IR");
+    let pk = <IrSource as Zkir>::load_prover_key_from_tagged(Cursor::new(key_bytes))
+        .expect("decode release-source V3 proving key");
+    pk.init().expect("initialize release-source V3 proving key");
+    let vk: VerifierKey = tagged_deserialize(&mut &verifier_key_bytes[..])
+        .expect("decode release-source V3 verifier key");
+    vk.init()
+        .expect("initialize release-source V3 verifier key");
+    let preimage: ProofPreimage =
+        tagged_deserialize(&mut &preimage_bytes[..]).expect("decode release-source V3 preimage");
+    preimage.check(&ir).expect("preimage matches released IR");
+    let baseline_proof: Proof =
+        tagged_deserialize(&mut &baseline_proof_bytes[..]).expect("decode release-source V3 proof");
     let verifier_params =
         ParamsVerifier::read(&params_bytes[..]).expect("read release-source verifier parameters");
     let public_inputs = [preimage.binding_input];

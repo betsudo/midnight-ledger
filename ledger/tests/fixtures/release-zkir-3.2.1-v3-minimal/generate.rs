@@ -18,8 +18,8 @@
 use std::borrow::Cow;
 use std::fs;
 use std::io;
+use std::io::Cursor;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use midnight_curves::Bls12;
 use midnight_proofs::poly::kzg::params::ParamsKZG;
@@ -84,15 +84,19 @@ async fn produce_release_source_v3_fixture() {
     fs::create_dir_all(root.join("keys")).expect("create keys directory");
     fs::create_dir_all(root.join("zkir")).expect("create IR directory");
     let ir = IrSource::load(IR.as_bytes()).expect("load V3 IR");
-    let params = ParamsProver(Arc::new(ParamsKZG::<Bls12>::unsafe_setup(
-        ir.k() as u32,
-        ChaCha20Rng::from_seed([7; 32]),
-    )));
-    let mut params_bytes = Vec::new();
-    params
-        .0
-        .write_custom(&mut params_bytes, SerdeFormat::RawBytesUnchecked)
-        .expect("serialize parameters");
+    let params_bytes = if let Ok(path) = std::env::var("MIDNIGHT_RELEASE_V3_PARAM") {
+        fs::read(path).expect("read official per-k parameters")
+    } else {
+        let params =
+            ParamsKZG::<Bls12>::unsafe_setup(ir.k() as u32, ChaCha20Rng::from_seed([7; 32]));
+        let mut bytes = Vec::new();
+        params
+            .write_custom(&mut bytes, SerdeFormat::RawBytesUnchecked)
+            .expect("serialize generated parameters");
+        bytes
+    };
+    let params = ParamsProver::read(Cursor::new(&params_bytes))
+        .expect("read generated or official per-k parameters");
     let verifier_params =
         ParamsVerifier::read(&params_bytes[..]).expect("read verifier parameters");
     let provider = Params(params);
