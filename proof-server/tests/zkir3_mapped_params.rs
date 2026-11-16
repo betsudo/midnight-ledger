@@ -140,6 +140,7 @@ async fn compact_generated_zkir3_counter_uses_the_same_prover_paths() {
 
 // Build midnight-zkir-wasm for the nodejs target from the matching Ledger9
 // integration graph, then point this opt-in test at its wasm-pack output.
+// The key and k=6 SRS here are independently published artifacts.
 #[actix_web::test]
 #[ignore = "build midnight-zkir-wasm with wasm-pack and set MIDNIGHT_ZKIR_WASM_PACKAGE"]
 async fn wasm_compact_v3_proof_verifies_with_native_ledger9() {
@@ -147,26 +148,25 @@ async fn wasm_compact_v3_proof_verifies_with_native_ledger9() {
         .expect("set MIDNIGHT_ZKIR_WASM_PACKAGE to the wasm-pack nodejs output directory");
     let ir = IrSource::load(include_str!("compact-v3-counter/increment.zkir").as_bytes())
         .expect("load Compact-generated v3 IR");
-    let params = ParamsProver(Arc::new(ParamsKZG::<Bls12>::unsafe_setup(
-        ir.k() as u32,
-        ChaCha20Rng::from_seed([7; 32]),
-    )));
-    let mut params_bytes = Vec::new();
-    params
-        .0
-        .write_custom(&mut params_bytes, SerdeFormat::RawBytesUnchecked)
-        .expect("serialize prover parameters");
+    let params_bytes = include_bytes!("fixtures/midnight-js-counter-increment/bls_midnight_2p6");
     let verifier_params =
         ParamsVerifier::read(&params_bytes[..]).expect("read verifier parameters");
-    let (pk, vk) = ir.keygen(&HeapParams(params)).await.expect("v3 keygen");
+    let prover_key_bytes =
+        include_bytes!("fixtures/midnight-js-counter-increment/increment.prover");
+    let verifier_key_bytes =
+        include_bytes!("fixtures/midnight-js-counter-increment/increment.verifier");
+    let vk: VerifierKey =
+        tagged_deserialize(&mut &verifier_key_bytes[..]).expect("decode published verifier key");
     let preimage_bytes = compact_ts_preimage_bytes();
     let preimage: ProofPreimage =
         tagged_deserialize(&mut &preimage_bytes[..]).expect("decode TypeScript-generated preimage");
     preimage.check(&ir).expect("preimage matches Compact V3 IR");
     let fixture = tempfile::tempdir().expect("private interop fixture directory");
     fs::write(fixture.path().join("params.bin"), params_bytes).expect("write parameters");
-    write_tagged_fixture(fixture.path(), "prover-key.bin", &pk);
-    write_tagged_fixture(fixture.path(), "verifier-key.bin", &vk);
+    fs::write(fixture.path().join("prover-key.bin"), prover_key_bytes)
+        .expect("copy published prover key");
+    fs::write(fixture.path().join("verifier-key.bin"), verifier_key_bytes)
+        .expect("copy published verifier key");
     write_tagged_fixture(fixture.path(), "ir.bin", &ir);
     fs::write(fixture.path().join("preimage.bin"), preimage_bytes)
         .expect("copy exact TypeScript-generated preimage bytes");
@@ -274,10 +274,10 @@ async fn release_source_v3_key_and_proof_remain_usable() {
             "../../ledger/tests/fixtures/release-zkir-3.2.1-v3-minimal/minimal/",
             "preimage.bin"
         )),
-        include_bytes!(concat!(
+        Some(include_bytes!(concat!(
             "../../ledger/tests/fixtures/release-zkir-3.2.1-v3-minimal/minimal/",
             "proof.bin"
-        )),
+        ))),
         include_bytes!(concat!(
             "../../ledger/tests/fixtures/release-zkir-3.2.1-v3-minimal/minimal/",
             "params.bin"
@@ -308,14 +308,30 @@ async fn release_source_v3_key_with_official_k4_params_remains_usable() {
             "../../ledger/tests/fixtures/release-zkir-3.2.1-official-k4-minimal/minimal/",
             "preimage.bin"
         )),
-        include_bytes!(concat!(
+        Some(include_bytes!(concat!(
             "../../ledger/tests/fixtures/release-zkir-3.2.1-official-k4-minimal/minimal/",
             "proof.bin"
-        )),
+        ))),
         include_bytes!(concat!(
             "../../ledger/tests/fixtures/release-zkir-3.2.1-official-k4-minimal/minimal/",
             "params.bin"
         )),
+    )
+    .await;
+}
+
+// The key and verifier are from the independently published midnight-js
+// Compact 0.36.1 testkit bundle. Its IR hash matches the checked-in counter
+// IR, and the k=6 SRS matches the Ledger9 release manifest.
+#[actix_web::test]
+async fn published_midnight_js_counter_key_proves_with_official_params() {
+    exercise_release_source_v3_fixture(
+        include_bytes!("compact-v3-counter/increment.zkir"),
+        include_bytes!("fixtures/midnight-js-counter-increment/increment.prover"),
+        include_bytes!("fixtures/midnight-js-counter-increment/increment.verifier"),
+        &compact_ts_preimage_bytes(),
+        None,
+        include_bytes!("fixtures/midnight-js-counter-increment/bls_midnight_2p6"),
     )
     .await;
 }
@@ -325,7 +341,7 @@ async fn exercise_release_source_v3_fixture(
     key_bytes: &[u8],
     verifier_key_bytes: &[u8],
     preimage_bytes: &[u8],
-    baseline_proof_bytes: &[u8],
+    baseline_proof_bytes: Option<&[u8]>,
     params_bytes: &[u8],
 ) {
     let ir = IrSource::load(ir_bytes).expect("load release-source V3 IR");
@@ -339,13 +355,24 @@ async fn exercise_release_source_v3_fixture(
     let preimage: ProofPreimage =
         tagged_deserialize(&mut &preimage_bytes[..]).expect("decode release-source V3 preimage");
     preimage.check(&ir).expect("preimage matches released IR");
-    let baseline_proof: Proof =
-        tagged_deserialize(&mut &baseline_proof_bytes[..]).expect("decode release-source V3 proof");
     let verifier_params =
         ParamsVerifier::read(&params_bytes[..]).expect("read release-source verifier parameters");
-    let public_inputs = [preimage.binding_input];
-    vk.verify(&verifier_params, &baseline_proof, public_inputs.into_iter())
+    let mut public_inputs = vec![preimage.binding_input];
+    if let Some((commitment, _)) = preimage.communications_commitment {
+        public_inputs.push(commitment);
+    }
+    public_inputs.extend(preimage.public_transcript_inputs.iter().copied());
+    public_inputs.extend(preimage.public_transcript_outputs.iter().copied());
+    if let Some(baseline_proof_bytes) = baseline_proof_bytes {
+        let baseline_proof: Proof = tagged_deserialize(&mut &baseline_proof_bytes[..])
+            .expect("decode release-source V3 proof");
+        vk.verify(
+            &verifier_params,
+            &baseline_proof,
+            public_inputs.iter().copied(),
+        )
         .expect("optimized Ledger9 verifies release-source V3 proof");
+    }
 
     let mut reencoded_key = Vec::new();
     tagged_serialize(&pk, &mut reencoded_key).expect("reencode V3 proving key");
@@ -380,7 +407,7 @@ async fn exercise_release_source_v3_fixture(
             .expect("prove with release-source V3 key");
         resolver
             .vk
-            .verify(&verifier_params, &proof, public_inputs.into_iter())
+            .verify(&verifier_params, &proof, public_inputs.iter().copied())
             .expect("verify proof from release-source V3 key");
     }
 
@@ -405,7 +432,7 @@ async fn exercise_release_source_v3_fixture(
             .expect("prove with initialized heap key and spilled cosets");
         resolver
             .vk
-            .verify(&verifier_params, &proof, public_inputs.into_iter())
+            .verify(&verifier_params, &proof, public_inputs.iter().copied())
             .expect("verify proof with spilled cosets");
 
         let companion_dir = tempfile::tempdir().expect("private release-source companion dir");
@@ -432,7 +459,7 @@ async fn exercise_release_source_v3_fixture(
             .expect("prove with mapped release-source SRS, key, and cosets");
         resolver
             .vk
-            .verify(&verifier_params, &proof, public_inputs.into_iter())
+            .verify(&verifier_params, &proof, public_inputs.iter().copied())
             .expect("verify proof with mapped release-source SRS");
     }
 }
