@@ -8,6 +8,7 @@ description = "Implementation of the Zswap shielded token atomic swap mechanism.
 
 [features]
 default = ["proof-verifying"]
+native-memory = ["transient-crypto/native-memory"]
 proof-verifying = ["dep:zkir_v2"]
 
 [dependencies]

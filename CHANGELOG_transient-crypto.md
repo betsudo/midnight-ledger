@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- feat: add an explicit per-request ZKIR v3 prover context and an opt-in
+  `native-memory` feature for the native mapped parameter provider, while
+  retaining the existing proving interface and a heap-only WebAssembly path.
+- fix: validate trusted immutable parameter companions before reuse, publish
+  them without replacing existing files, and honor the requested load policy
+  on cache misses.
+- fix: release the serialized prover-key buffer after decoding so it is not
+  retained for the duration of proof generation.
+
 ## Version `3.1.0`
 
 - feat: add `PureGeneratorPedersen::smallest_representable`, for bounding
