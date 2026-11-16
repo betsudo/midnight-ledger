@@ -16,7 +16,7 @@ that official SRS. **This is not a network-distributed production proving
 key.** The `release_source_v3_key_with_official_k4_params_remains_usable`
 test verifies the baseline proof with the optimized Ledger9 verifier,
 round-trips the tagged key, and proves and verifies with heap and, when
-`native-memory` is enabled, mapped-key/forced-coset-spill policies. The
+`native-memory` is enabled, mapped SRS/key and forced coset-spill policies. The
 separate released key distribution and high-k memory gates remain open.
 
 To reproduce, use a detached checkout of published ZKIR source `8825fb5a`,

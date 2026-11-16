@@ -407,6 +407,33 @@ async fn exercise_release_source_v3_fixture(
             .vk
             .verify(&verifier_params, &proof, public_inputs.into_iter())
             .expect("verify proof with spilled cosets");
+
+        let companion_dir = tempfile::tempdir().expect("private release-source companion dir");
+        // The test owns this directory and does not mutate published files
+        // while the mapped companion is alive.
+        let trusted = unsafe { TrustedParamsDir::new(companion_dir.path()) };
+        let cache = CompanionCache::from_trusted_dir(trusted.clone());
+        let name = MidnightDataProvider::name_k(resolver.ir.k());
+        cache
+            .open_or_build(&name, || Ok(params.0.clone()))
+            .expect("publish release-source SRS companion");
+        let mapped_params = MappedParams::new(NoFallback, trusted);
+        let mut mapped_policy = ProverConfig::mapped_key_and_cosets();
+        mapped_policy.coset_spill_floor_k = 0;
+        mapped_policy.spill_dir = Some(spill_dir.path().to_path_buf());
+        let (proof, _) = preimage
+            .prove_with_context::<IrSource>(
+                ChaCha20Rng::from_seed([44; 32]),
+                &mapped_params,
+                &resolver,
+                &ProverContext::new(mapped_policy),
+            )
+            .await
+            .expect("prove with mapped release-source SRS, key, and cosets");
+        resolver
+            .vk
+            .verify(&verifier_params, &proof, public_inputs.into_iter())
+            .expect("verify proof with mapped release-source SRS");
     }
 }
 
