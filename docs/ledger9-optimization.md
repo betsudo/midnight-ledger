@@ -113,8 +113,9 @@ Tracking: [Ledger #14](https://github.com/betsudo/midnight-ledger/issues/14), [L
 ## Current fork qualification
 
 [Ledger PR #39](https://github.com/betsudo/midnight-ledger/pull/39) pins
-the k=4 and k=6 fixtures described above. Its focused `native-memory`
-V3 test passed seven cases with two intentional ignores. The exact-head
+the k=4 and k=6 fixtures described above. On the pre-documentation
+executable head `2b3ee462`, the focused `native-memory` V3 test had seven
+passes and two intentional ignores. That head's
 [build-and-test workflow](https://github.com/betsudo/midnight-ledger/actions/runs/43834105721)
 passed eight jobs, including feature-enabled Ledger9 Wasm compilation and
 the integration suite; [coverage](https://github.com/betsudo/midnight-ledger/actions/runs/43834104987)
