@@ -356,7 +356,7 @@ async fn exercise_release_source_v3_fixture(
         tagged_deserialize(&mut &preimage_bytes[..]).expect("decode release-source V3 preimage");
     preimage.check(&ir).expect("preimage matches released IR");
     let verifier_params =
-        ParamsVerifier::read(&params_bytes[..]).expect("read release-source verifier parameters");
+        ParamsVerifier::read(params_bytes).expect("read release-source verifier parameters");
     let mut public_inputs = vec![preimage.binding_input];
     if let Some((commitment, _)) = preimage.communications_commitment {
         public_inputs.push(commitment);
@@ -377,7 +377,7 @@ async fn exercise_release_source_v3_fixture(
     let mut reencoded_key = Vec::new();
     tagged_serialize(&pk, &mut reencoded_key).expect("reencode V3 proving key");
     assert_eq!(reencoded_key, key_bytes, "proving-key format changed");
-    let params = HeapParams(ParamsProver::read(&params_bytes[..]).expect("read prover parameters"));
+    let params = HeapParams(ParamsProver::read(params_bytes).expect("read prover parameters"));
     let resolver = KeyResolver { pk, vk, ir };
     #[cfg(feature = "native-memory")]
     let mut policies = vec![ProverConfig::heap()];
