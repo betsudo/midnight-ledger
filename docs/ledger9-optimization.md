@@ -97,7 +97,7 @@ remain compatible.
 
 - Preserve released per-`k` artifact behavior and serialized proof/key formats for Ledger9.
 - Check default and feature-enabled native/Wasm builds and exact cross-repository pins.
-- Verify the V3 TypeScript preimage and Node/Wasm proof against native Ledger9. The local small-circuit exchange passed; released V3 keys and browser execution need separate evidence.
+- Verify the V3 TypeScript preimage and Node/Wasm proof against native Ledger9. The local k=4 test uses an official SRS and a key generated from published ZKIR 3.2.1 source; the k=6 test uses an official SRS and an independently published SDK testkit key. Deployed-dApp key and browser execution remain separate gates.
 - Record separate-process high-`k` peak RSS, latency, source heads, target/device, and storage policy before claiming a memory benefit.
 - Require current-head CI and external review before merging contribution PRs.
 
@@ -109,3 +109,22 @@ admission, parameter trust boundary, V3 context propagation, and measured
 storage behavior so each change has its own compatibility argument.
 
 Tracking: [Ledger #14](https://github.com/betsudo/midnight-ledger/issues/14), [Ledger #29](https://github.com/betsudo/midnight-ledger/issues/29), and [ZK #5](https://github.com/betsudo/midnight-zk/issues/5). See [branch naming](branching.md) for future release upgrades.
+
+## Current fork qualification
+
+[Ledger PR #39](https://github.com/betsudo/midnight-ledger/pull/39) pins
+the k=4 and k=6 fixtures described above. Its focused `native-memory`
+V3 test passed seven cases with two intentional ignores. The exact-head
+[build-and-test workflow](https://github.com/betsudo/midnight-ledger/actions/runs/43834105721)
+passed eight jobs, including feature-enabled Ledger9 Wasm compilation and
+the integration suite; [coverage](https://github.com/betsudo/midnight-ledger/actions/runs/43834104987)
+also passed. The Node/Wasm-to-native proof test passed locally using the
+ZKIR 3.2.1 Node package but is opt-in and ignored in ordinary CI.
+
+These results establish small-circuit format and cross-runtime
+interoperability, not high-`k` resident-memory relief, mobile capacity, or
+deployed-dApp artifact coverage. [Ledger #30](https://github.com/betsudo/midnight-ledger/issues/30)
+tracks the remaining V3 acceptance gates, and
+[Ledger #12](https://github.com/betsudo/midnight-ledger/issues/12) owns the
+repeatable capacity benchmark. The cross-repository PR and upstream review
+map is in [ZK PR #13](https://github.com/betsudo/midnight-zk/pull/13).
