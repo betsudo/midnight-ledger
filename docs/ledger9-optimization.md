@@ -1,12 +1,45 @@
 # Ledger9 optimization integration
 
-This contribution series starts from the official `ledger-9.1.0.1` tag. It pins the published `midnight-proofs` 0.8.2 and ZKIR 3.2.1 source lines by Git revision. The `native-memory` Cargo feature enables native storage capability; it does not select mapped storage for a request. Default proving remains heap-backed, and V2 retains its compatibility route.
+The current fork candidate starts from the official `ledger-9.1.0.2` tag
+(`055e413d`) and merges the tested 9.1.0.1 optimization head (`b493ac5f`).
+It pins the published `midnight-proofs` 0.8.2 and ZKIR 3.2.1 source lines by
+Git revision. The `native-memory` Cargo feature enables native storage
+capability; it does not select mapped storage for a request. Default proving
+remains heap-backed, and V2 retains its compatibility route.
 
 The intended result is lower peak memory on selected native V3 workloads
 with an explicit tradeoff in disk I/O and latency. This is an opt-in
 architecture proposal, not a change to Ledger9's wire formats or default
 proof behavior. The release-base approach and branch roles are described
 in [branch naming](branching.md).
+
+## Ledger 9.1.0.2 release delta
+
+The [official 9.1.0.2 release](https://github.com/midnightntwrk/midnight-ledger/releases/tag/ledger-9.1.0.2)
+is a client-side patch on Ledger9. It adds `TransactionShape` and sizes
+transcript partitioning against the predicted transaction's dismissal
+allowance and widest possible commitment-tree indices. Client-side Wasm
+loading accepts a short extension chain that an ordinary map write can
+produce; node and consensus decoding must keep the strict default. The
+co-tagged proof server 9.0.2 passes container arguments through and provides
+an optional parameter-cache mount at `MIDNIGHT_PP`.
+
+The merged graph resolves `midnight-ledger-v9` 1.0.2, proof-server 9.0.2,
+storage 3.1.0, transient-crypto 3.1.0, the optimized proofs 0.8.2 fork at
+`505156ec`, and the ZKIR 3.2.1 fork at `3e980fbe`. The latter two pins
+preserve the reviewed native storage and V3 context changes. Their default
+heap and Wasm behavior remains a compatibility gate, not an assumption.
+
+At local merge head `0a14fda3`, locked offline checks of Ledger and proof
+server passed. The native-memory V3 fixture test passed seven active cases
+with two intentional ignores; the checked-in official-k4 artifact and key
+decode test passed. A direct host Wasm check stopped in the host `clang`
+toolchain before compiling Ledger because that compiler lacks the Wasm C
+target. The repository's full Nix shell began building unrelated flake
+inputs and was stopped to conserve disk. Feature-enabled Wasm, release
+transaction-shape behavior, proof-server integration, and current-head CI
+remain gates for the 9.1.0.2 review branch. The opt-in Node/Wasm-to-native
+proof test is not part of ordinary hosted CI.
 
 ## Request path
 
@@ -110,7 +143,7 @@ storage behavior so each change has its own compatibility argument.
 
 Tracking: [Ledger #14](https://github.com/betsudo/midnight-ledger/issues/14), [Ledger #29](https://github.com/betsudo/midnight-ledger/issues/29), and [ZK #5](https://github.com/betsudo/midnight-zk/issues/5). See [branch naming](branching.md) for future release upgrades.
 
-## Current fork qualification
+## Prior 9.1.0.1 fork qualification
 
 [Ledger PR #39](https://github.com/betsudo/midnight-ledger/pull/39) pins
 the k=4 and k=6 fixtures described above. On the pre-documentation

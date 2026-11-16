@@ -4,8 +4,8 @@ Use `<role>/<release-line>/<artifact>-<version-or-topic>`, all lowercase with hy
 
 | Role | Purpose | Ledger9 example |
 | --- | --- | --- |
-| `sync` | Immutable pointer to the verified upstream tag or published-crate source. No optimization commits. | `sync/ledger9/ledger-9.1.0.1` |
-| `integration` | Fork release line, initialized from `sync` and advanced only by reviewed merges. PRs target this branch. | `integration/ledger9/ledger-9.1.0.1` |
+| `sync` | Immutable pointer to the verified upstream tag or published-crate source. No optimization commits. | `sync/ledger9/ledger-9.1.0.2` |
+| `integration` | Fork release line, initialized from `sync` and advanced only by reviewed merges. PRs target this branch. | `integration/ledger9/ledger-9.1.0.2` |
 | `opt` | One reviewable optimization or compatibility change. | `opt/ledger9/proofs-native-memory` |
 | `fix` | One regression fix against the integration line. | `fix/ledger9/v3-cancellation` |
 | `docs` | Documentation with no behavior change. | `docs/ledger9/storage-policy` |
@@ -14,4 +14,4 @@ Agent-owned scratch and proposal branches may prefix the role with `codex/`, for
 
 For this graph, use `sync/ledger9/proofs-0.8.2` and `integration/ledger9/proofs-0.8.2` in `midnight-zk`; `sync/ledger9/zkir-3.2.1` and `integration/ledger9/zkir-3.2.1` in `midnight-zkir`; and the Ledger branches shown above in `midnight-ledger`. ZKIR 3.2.1 is anchored to the published crate's recorded source commit because its Git tag does not identify the packaged 3.2.1 source. The PR description must explain that exception.
 
-Create a new release line for Ledger10 or another package upgrade. Do not move a `sync` branch after publication. If upstream corrects a tag or releases a new package, create a new versioned `sync` and `integration` pair and compare the official release delta before replaying fork changes.
+Create a new release line for Ledger10 or another package upgrade. Do not move a `sync` branch after publication. If upstream corrects a tag or releases a new package, create a new versioned `sync` and `integration` pair and compare the official release delta before replaying fork changes. The 9.1.0.1 pair remains as the earlier tested baseline; the 9.1.0.2 pair starts at official tag `055e413d`.
