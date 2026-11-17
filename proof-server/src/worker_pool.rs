@@ -207,9 +207,7 @@ impl Requests {
 
     async fn try_start(&self, id: Uuid) -> Option<Work> {
         let mut reqs = self.reqs.lock().await;
-        let Some(req) = reqs.get_mut(&id) else {
-            return None;
-        };
+        let req = reqs.get_mut(&id)?;
         if !matches!(req.status, JobStatus::Pending) {
             return None;
         }
