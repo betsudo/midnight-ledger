@@ -1,0 +1,81 @@
+[package]
+name = "midnight-transient-crypto"
+version = "2.2.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/midnightntwrk/midnight-ledger"
+publish = false
+description = "Cryptographic primitives for Midnight that may change over time."
+
+[features]
+default = []
+cli = ["base-crypto/cli"]
+proptest = [
+  "dep:proptest",
+  "dep:proptest-derive",
+  "base-crypto/proptest",
+  "serialize/proptest",
+  "storage-core/proptest",
+]
+mock-verify = []
+public-internal-structure = []
+
+[dependencies]
+base-crypto = { version = "1.1.1", path = "../base-crypto", package = "midnight-base-crypto" }
+derive = { version = "1.1.0", path = "../base-crypto-derive", package = "midnight-base-crypto-derive" }
+serialize = { version = "1.2.1", path = "../serialize", package = "midnight-serialize" }
+storage-core = { version = "1.2.3", path = "../storage-core", package = "midnight-storage-core" }
+
+ff = "^0.13.1"
+group = "^0.13.0"
+midnight-curves = { version = "^0.2.0" }
+midnight-proofs = { version = "^0.7.0" }
+midnight-circuits = { version = "^6.2.0" }
+midnight-zk-stdlib = { version = "^1.2.0" }
+anyhow = { version = "^1.0.102" }
+lru = "0.18.0"
+
+# rand 0.9.0 is not yet supported by some of our dependencies, we will
+# stick with 0.8.0 for now.
+rand = { version = "^0.8.4", features = ["getrandom"] }
+lazy_static = "^1.5.0"
+tracing = { version = "^0.1.41" }
+const-hex = "^1.14.1"
+sha2 = "^0.11.0"
+flate2 = "^1.1.2"
+subtle = "^2.6.1"
+zeroize = "^1.8.0"
+
+derive-where = "^1.6.1"
+serde = { version = "^1.0.219", features = ["derive", "rc"] }
+serde_bytes = { version = "^0.11.17" }
+serde_json = { version = "^1.0.140" }
+fake = { version = "^2.10.0", features = ["derive"] }
+pastey = "0.2.1"
+# proptest 1.7.0+ rely on rand 0.9.0, which we are not yet updating to.
+proptest = { version = "~1.6.0", optional = true }
+proptest-derive = { version = "0.8", optional = true }
+blake2b_simd = "1.0.3"
+
+futures = { version = "^0.3.31" }
+
+[dev-dependencies]
+midnight-transient-crypto = { path = ".", features = ["proptest"] }
+actix-rt = "^2.10.0"
+rand_chacha = "^0.3.1"
+tracing-subscriber = "0.3.19"
+criterion = { version = "^0.5.1" }
+rayon = "^1.10.0"
+
+[[bench]]
+name = "benchmarking"
+harness = false
+
+[[bench]]
+name = "merkle_deserialize"
+harness = false
+
+[[example]]
+name = "calibrate"
+path = "examples/calibrate.rs"
+required-features = ["mock-verify"]
