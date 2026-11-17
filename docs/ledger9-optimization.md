@@ -25,10 +25,14 @@ co-tagged proof server 9.0.2 passes container arguments through and provides
 an optional parameter-cache mount at `MIDNIGHT_PP`.
 
 The merged graph resolves `midnight-ledger-v9` 1.0.2, proof-server 9.0.2,
-storage 3.1.0, transient-crypto 3.1.0, the optimized proofs 0.8.2 fork at
-`505156ec`, and the ZKIR 3.2.1 fork at `3e980fbe`. The latter two pins
-preserve the reviewed native storage and V3 context changes. Their default
-heap and Wasm behavior remains a compatibility gate, not an assumption.
+storage 3.1.0, transient-crypto 3.1.0, the optimized proofs 0.8.2 source at
+`bca8db4d`, and the ZKIR 3.2.1 fork at `3e980fbe`. The ZK revision contains
+the reviewed native-storage implementation plus the patch-free Git-consumer
+closure from ZK PR #17: the published SHA3 and Blake2b helper sources use
+repository-relative dependencies on the same curves and proofs packages.
+Applications no longer need a four-package proof patch table to consume this
+Ledger source graph. Default heap and Wasm behavior remains a compatibility
+gate, not an assumption.
 
 At local merge head `0a14fda3`, locked offline checks of Ledger and proof
 server passed. The native-memory V3 fixture test passed seven active cases
