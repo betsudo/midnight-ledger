@@ -82,7 +82,9 @@ it('proves the independent Compact k=6 counter bundle through the TS provider', 
     }
   });
 
-  expect(await provider.check(preimage, 'test')).toEqual([]);
+  // This Compact circuit exposes three skip slots. The released WASM
+  // provider represents each Rust None as JavaScript undefined.
+  expect(await provider.check(preimage, 'test')).toEqual([undefined, undefined, undefined]);
   const proof = await provider.prove(preimage, 'test');
   expect(proof.length).toBeGreaterThan(0);
   if (process.env.MIDNIGHT_V3_WASM_COUNTER_PROOF_OUT) {
