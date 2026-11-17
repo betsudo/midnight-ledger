@@ -6,10 +6,11 @@ for Ledger 9 legacy-state translation.
 
 The Rust sources are unchanged except that `proofs.rs` reuses the
 byte-identical verifier-parameter blob already present in the sibling current
-package. Its path dependencies intentionally resolve to the current in-tree
-base, serialization, and corrected storage-core packages, matching the
-compatible versions selected by the published crate while keeping `sysinfo`
-out of normal mobile builds.
+package. Its base, derive, and serialization dependencies resolve to the
+compatible versions in this checkout. Its storage dependency resolves to the
+separately preserved `storage-core-v1` source so legacy gas and state behavior
+remain identical while the unused `sysinfo` dependency stays out of mobile
+builds.
 
 This compatibility package is not published and is excluded from default
 workspace members. Remove it only when Ledger 9 no longer reads the legacy
