@@ -78,7 +78,16 @@ runs:
         yarn lint
         yarn build
         yarn test:coverage:prepare
+        export MIDNIGHT_V3_WASM_IR_OUT="${RUNNER_TEMP}/ledger9-v3-wasm-ir.bin"
+        export MIDNIGHT_V3_WASM_PROOF_OUT="${RUNNER_TEMP}/ledger9-v3-wasm-proof.bin"
         nix develop .#ci -c yarn test:coverage | tee ./coverage.txt
+        test -s "$MIDNIGHT_V3_WASM_IR_OUT"
+        test -s "$MIDNIGHT_V3_WASM_PROOF_OUT"
+        cd ..
+        MIDNIGHT_V3_WASM_IR="$MIDNIGHT_V3_WASM_IR_OUT" \
+          MIDNIGHT_V3_WASM_PROOF="$MIDNIGHT_V3_WASM_PROOF_OUT" \
+          nix develop .#ci -c cargo test --release --locked -p midnight-proof-server \
+          --test release_v3_compat released_v3_key_verifies_typescript_wasm_proof -- --ignored
 
     - name: Upload Logs
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
