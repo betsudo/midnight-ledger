@@ -9,7 +9,7 @@
 use std::fs;
 
 use serialize::{tagged_deserialize, tagged_serialize};
-use transient_crypto::proofs::{ParamsVerifier, Proof, VerifierKey};
+use transient_crypto::proofs::{ParamsVerifier, Proof, ProofPreimage, VerifierKey};
 use zkir_v3::IrSource;
 
 const FIXTURE: &str = concat!(
@@ -58,4 +58,54 @@ fn released_v3_key_verifies_typescript_wasm_proof() {
     vk.verify(&params, &proof, [42.into()].into_iter())
         .expect("native verifier accepts TypeScript/Wasm proof");
     assert!(vk.verify(&params, &proof, [43.into()].into_iter()).is_err());
+}
+
+#[test]
+#[ignore = "run after the ZKIR 3.2.1 TypeScript/Wasm integration test exports the counter proof"]
+fn compact_v3_counter_key_verifies_typescript_wasm_proof() {
+    const COUNTER: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/midnight-js-counter-increment"
+    );
+    let proof_path = std::env::var("MIDNIGHT_V3_WASM_COUNTER_PROOF")
+        .expect("MIDNIGHT_V3_WASM_COUNTER_PROOF must point to the TypeScript/Wasm proof");
+    let proof: Proof = tagged_deserialize(
+        fs::read(proof_path)
+            .expect("read Compact TypeScript/Wasm proof")
+            .as_slice(),
+    )
+    .expect("decode Compact TypeScript/Wasm proof");
+    let vk: VerifierKey = tagged_deserialize(
+        fs::read(format!("{COUNTER}/increment.verifier"))
+            .expect("read published Compact verifier key")
+            .as_slice(),
+    )
+    .expect("decode published Compact verifier key");
+    let params = ParamsVerifier::read(
+        fs::read(format!("{COUNTER}/bls_midnight_2p6"))
+            .expect("read official k=6 SRS")
+            .as_slice(),
+    )
+    .expect("decode official k=6 verifier parameters");
+    let preimage: ProofPreimage = tagged_deserialize(
+        include_bytes!("compact-v3-counter/increment.ts-preimage.bin").as_slice(),
+    )
+    .expect("decode Compact TypeScript preimage");
+    let mut public_inputs = vec![preimage.binding_input];
+    if let Some((commitment, _)) = preimage.communications_commitment {
+        public_inputs.push(commitment);
+    }
+    public_inputs.extend(preimage.public_transcript_inputs.iter().copied());
+    public_inputs.extend(preimage.public_transcript_outputs.iter().copied());
+    vk.verify(&params, &proof, public_inputs.iter().copied())
+        .expect("native verifier accepts Compact TypeScript/Wasm proof");
+    public_inputs[0] = if public_inputs[0] == 43.into() {
+        44.into()
+    } else {
+        43.into()
+    };
+    assert!(
+        vk.verify(&params, &proof, public_inputs.into_iter())
+            .is_err()
+    );
 }
