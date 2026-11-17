@@ -29,12 +29,12 @@ storage-core = { version = "1.2.3", path = "../storage-core", package = "midnigh
 
 ff = "^0.13.1"
 group = "^0.13.0"
-midnight-curves = { version = "^0.3.1" }
+midnight-curves = { version = "^0.3.1", git = "https://github.com/betsudo/midnight-zk", rev = "0f9d5c3879f92a8beae8bdb9e7305f39e03a3227" }
 # Native storage is enabled only by this crate's `native-memory` feature.
 # The forwarded proofs feature remains heap-only on Wasm.
-midnight-proofs = { version = "^0.8.2" }
-midnight-circuits = { version = "^7.3.0" }
-midnight-zk-stdlib = { version = "^2.4.0" }
+midnight-proofs = { version = "^0.8.2", git = "https://github.com/betsudo/midnight-zk", rev = "0f9d5c3879f92a8beae8bdb9e7305f39e03a3227" }
+midnight-circuits = { version = "^7.3.0", git = "https://github.com/betsudo/midnight-zk", rev = "0f9d5c3879f92a8beae8bdb9e7305f39e03a3227" }
+midnight-zk-stdlib = { version = "^2.4.0", git = "https://github.com/betsudo/midnight-zk", rev = "0f9d5c3879f92a8beae8bdb9e7305f39e03a3227" }
 anyhow = { version = "^1.0.102" }
 lru = "0.18.0"
 # Keep native storage dependencies in a target-specific table so they cannot
