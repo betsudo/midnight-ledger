@@ -221,7 +221,9 @@ export const prove = async (
 };
 
 export const startProofServer = () => {
-  return startProofServerBinary();
+  // Vitest runs independent proving suites concurrently. Keep admission
+  // bounded while allowing their short request-body reads to overlap.
+  return startProofServerBinary(undefined, ' -v --max-ingress 64 --job-capacity 64');
 };
 
 export const stopProofServer = () => {

@@ -42,7 +42,12 @@ default-members = [
 ]
 resolver = "2"
 exclude = [
-    "scripts/hardfork_version_patch"
+    "scripts/hardfork_version_patch",
+    # Compatibility source used only through explicit path dependencies. Keep
+    # it out of default workspace builds while retaining one Git revision for
+    # Ledger 8 state translation inside Ledger 9.
+    "transient-crypto-v2",
+    "storage-core-v1"
 ]
 
 # Pretty much every dependency is crypto.
@@ -65,6 +70,13 @@ panic = "abort"
 # present in consumer builds is fine, as they don't/shouldn't *want* the local
 # packages.
 [patch.crates-io]
+# The released Ledger9 proof line is 0.8.2. Pin the reviewed native-storage
+# change by commit so checkout branch changes cannot silently drop the patch.
+midnight-proofs = { git = "https://github.com/betsudo/midnight-zk", rev = "0f9d5c3879f92a8beae8bdb9e7305f39e03a3227" }
+midnight-circuits = { git = "https://github.com/betsudo/midnight-zk", rev = "0f9d5c3879f92a8beae8bdb9e7305f39e03a3227" }
+midnight-zk-stdlib = { git = "https://github.com/betsudo/midnight-zk", rev = "0f9d5c3879f92a8beae8bdb9e7305f39e03a3227" }
+midnight-curves = { git = "https://github.com/betsudo/midnight-zk", rev = "0f9d5c3879f92a8beae8bdb9e7305f39e03a3227" }
+midnight-zkir = { git = "https://github.com/betsudo/midnight-zkir", rev = "3e980fbe86aa3907c5ed1f3af7a359cc97454428" }
 midnight-base-crypto = { path = "base-crypto" }
 midnight-serialize = { path = "serialize" }
 # midnight-zkir v3 asks crates.io for transient-crypto ^3.0.0; resolve it to

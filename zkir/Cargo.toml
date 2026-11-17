@@ -28,12 +28,12 @@ base-crypto = { version = "1.1.0", path = "../base-crypto", package = "midnight-
 serialize = { version = "1.1.1", path = "../serialize", package = "midnight-serialize" }
 transient-crypto = { version = "3.1.0", path = "../transient-crypto", package = "midnight-transient-crypto", features = ["cli"] }
 
-midnight-proofs = { version = "^0.8.2" }
-midnight-circuits = { version = "^7.3.0" }
-midnight-zk-stdlib = { version = "^2.4.0" }
+midnight-proofs = { version = "^0.8.2", git = "https://github.com/betsudo/midnight-zk", rev = "0f9d5c3879f92a8beae8bdb9e7305f39e03a3227" }
+midnight-circuits = { version = "^7.3.0", git = "https://github.com/betsudo/midnight-zk", rev = "0f9d5c3879f92a8beae8bdb9e7305f39e03a3227" }
+midnight-zk-stdlib = { version = "^2.4.0", git = "https://github.com/betsudo/midnight-zk", rev = "0f9d5c3879f92a8beae8bdb9e7305f39e03a3227" }
 
 # Pinned pre-zk-stdlib-v2 versions for backwards-compatible v1 proving.
-transient-crypto-old = { package = "midnight-transient-crypto", version = "^2.2.0" }
+transient-crypto-old = { package = "midnight-transient-crypto", version = "2.2.0", path = "../transient-crypto-v2" }
 midnight-zk-stdlib-v1 = { package = "midnight-zk-stdlib", version = "^1.2.1" }
 midnight-proofs-v1 = { package = "midnight-proofs", version = "^0.7.2" }
 midnight-circuits-v1 = { package = "midnight-circuits", version = "^6.2.1" }

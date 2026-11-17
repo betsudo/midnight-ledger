@@ -17,9 +17,9 @@
 //! Proving tests only run under `--features proving`, which CI's PR gate does
 //! not enable - so a zkir format change that breaks decoding of the compiled
 //! artifacts is otherwise invisible until a full-proving (nightly) run. This
-//! test exercises just the decode path, which is where format drift between
-//! the zkir tool that compiled the artifacts and the workspace zkir crates
-//! shows up, without paying for any proving.
+//! test decodes IR without paying for a proof. Set
+//! `MIDNIGHT_REQUIRE_ZKIR_KEYS=1` to also initialize prover and verifier keys
+//! from a fixture bundle that must contain both key types.
 
 #![deny(warnings)]
 
@@ -62,14 +62,92 @@ fn check_zkir_json(path: &Path) {
     }
 }
 
+fn check_prover_key(path: &Path) {
+    let bytes = fs::read(path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
+    let tag = peek_tag(&mut std::io::Cursor::new(&bytes))
+        .unwrap_or_else(|e| panic!("peek tag of {path:?}: {e}"));
+    match tag.as_str() {
+        "prover-key[v7](ir-source[v2])" => {
+            let key = <zkir_v2::IrSource as transient_crypto_old::proofs::Zkir>::load_prover_key_from_tagged(
+                std::io::Cursor::new(&bytes),
+            )
+            .unwrap_or_else(|e| panic!("decode legacy v2 prover key {path:?}: {e}"));
+            key.init()
+                .unwrap_or_else(|e| panic!("initialize legacy v2 prover key {path:?}: {e}"));
+        }
+        "prover-key[v7](ir-source[v2-generic])" => {
+            let key =
+                <zkir_v2::IrSource as transient_crypto::proofs::Zkir>::load_prover_key_from_tagged(
+                    std::io::Cursor::new(&bytes),
+                )
+                .unwrap_or_else(|e| panic!("decode v2 prover key {path:?}: {e}"));
+            key.init()
+                .unwrap_or_else(|e| panic!("initialize v2 prover key {path:?}: {e}"));
+        }
+        "prover-key[v7](ir-source[v3-generic])" => {
+            let key =
+                <zkir_v3::IrSource as transient_crypto::proofs::Zkir>::load_prover_key_from_tagged(
+                    std::io::Cursor::new(&bytes),
+                )
+                .unwrap_or_else(|e| panic!("decode v3 prover key {path:?}: {e}"));
+            key.init()
+                .unwrap_or_else(|e| panic!("initialize v3 prover key {path:?}: {e}"));
+        }
+        other => panic!("unknown prover-key tag '{other}' in {path:?}"),
+    }
+}
+
+fn check_verifier_key(path: &Path) {
+    let bytes = fs::read(path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
+    let tag = peek_tag(&mut std::io::Cursor::new(&bytes))
+        .unwrap_or_else(|e| panic!("peek tag of {path:?}: {e}"));
+    match tag.as_str() {
+        "verifier-key[v6]" => {
+            let key: transient_crypto_old::proofs::VerifierKey =
+                tagged_deserialize(&mut &bytes[..])
+                    .unwrap_or_else(|e| panic!("decode v2 verifier key {path:?}: {e}"));
+            key.init()
+                .unwrap_or_else(|e| panic!("initialize v2 verifier key {path:?}: {e}"));
+        }
+        "verifier-key[v7]" => {
+            let key: transient_crypto::proofs::VerifierKey = tagged_deserialize(&mut &bytes[..])
+                .unwrap_or_else(|e| panic!("decode v3 verifier key {path:?}: {e}"));
+            key.init()
+                .unwrap_or_else(|e| panic!("initialize v3 verifier key {path:?}: {e}"));
+        }
+        other => panic!("unknown verifier-key tag '{other}' in {path:?}"),
+    }
+}
+
 #[test]
 fn static_zkir_artifacts_decode() {
     let test_dir = env::var("MIDNIGHT_LEDGER_TEST_STATIC_DIR")
         .expect("MIDNIGHT_LEDGER_TEST_STATIC_DIR should be set as env variable");
+    let require_keys = env::var("MIDNIGHT_REQUIRE_ZKIR_KEYS").as_deref() == Ok("1");
     let mut checked = 0;
+    let mut prover_keys = 0;
+    let mut verifier_keys = 0;
 
     for contract in fs::read_dir(&test_dir).expect("read static dir") {
-        let zkir_dir = contract.expect("dir entry").path().join("zkir");
+        let contract_dir = contract.expect("dir entry").path();
+        let keys_dir = contract_dir.join("keys");
+        if require_keys && keys_dir.is_dir() {
+            for entry in fs::read_dir(&keys_dir).expect("read keys dir") {
+                let path = entry.expect("dir entry").path();
+                match path.extension().and_then(|e| e.to_str()) {
+                    Some("prover") => {
+                        check_prover_key(&path);
+                        prover_keys += 1;
+                    }
+                    Some("verifier") => {
+                        check_verifier_key(&path);
+                        verifier_keys += 1;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let zkir_dir = contract_dir.join("zkir");
         if !zkir_dir.is_dir() {
             continue;
         }
@@ -92,4 +170,10 @@ fn static_zkir_artifacts_decode() {
         checked > 0,
         "no zkir artifacts found under {test_dir:?} - static dir misconfigured?"
     );
+    if require_keys {
+        assert!(
+            prover_keys > 0 && verifier_keys > 0,
+            "no complete prover/verifier fixture pair found under {test_dir:?}"
+        );
+    }
 }
