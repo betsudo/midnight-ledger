@@ -42,7 +42,12 @@ default-members = [
 ]
 resolver = "2"
 exclude = [
-    "scripts/hardfork_version_patch"
+    "scripts/hardfork_version_patch",
+    # Compatibility source used only through explicit path dependencies. Keep
+    # it out of default workspace builds while retaining one Git revision for
+    # Ledger 8 state translation inside Ledger 9.
+    "transient-crypto-v2",
+    "storage-core-v1"
 ]
 
 # Pretty much every dependency is crypto.
