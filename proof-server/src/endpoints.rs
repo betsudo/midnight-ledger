@@ -31,7 +31,7 @@ use ledger::structure::{
     INITIAL_TRANSACTION_COST_MODEL, ProofPreimageMarker, ProofPreimageVersioned, ProofVersioned,
     Signature, Transaction,
 };
-use midnight_proofs::config::ProverConfig;
+use midnight_proofs::config::{CancelToken, ProverConfig};
 use rand::rngs::OsRng;
 use serialize::{tagged_deserialize, tagged_serialize};
 use std::borrow::Cow;
@@ -59,6 +59,61 @@ lazy_static! {
         )
         .expect("data provider initialization failed")
     );
+}
+
+#[cfg(test)]
+mod context_tests;
+
+/// A proof request owns its cancellation token and any queued worker job.
+struct CancelOnDrop {
+    token: CancelToken,
+    queued_job: Option<(Arc<WorkerPool>, uuid::Uuid)>,
+}
+
+impl CancelOnDrop {
+    fn new() -> Self {
+        Self {
+            token: CancelToken::new(),
+            queued_job: None,
+        }
+    }
+
+    fn track_job(&mut self, pool: Arc<WorkerPool>, id: uuid::Uuid) {
+        self.queued_job = Some((pool, id));
+    }
+
+    fn disarm_job(&mut self) {
+        self.queued_job = None;
+    }
+}
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.token.cancel();
+        if let Some((pool, id)) = self.queued_job.take()
+            && let Ok(handle) = tokio::runtime::Handle::try_current()
+        {
+            handle.spawn(async move {
+                let _ = pool.cancel(id).await;
+            });
+        }
+    }
+}
+
+async fn wait_for_proof_job(
+    pool: &WorkerPool,
+    id: uuid::Uuid,
+    updates: &async_channel::Receiver<JobStatus>,
+    cancel: &CancelToken,
+) -> Result<Vec<u8>, Error> {
+    match tokio::time::timeout(pool.job_timeout(), JobStatus::wait_for_success(updates)).await {
+        Ok(result) => result.map_err(Into::into),
+        Err(_) => {
+            cancel.cancel();
+            let _ = pool.cancel(id).await;
+            Err(ErrorRequestTimeout("proof job timed out"))
+        }
+    }
 }
 
 async fn payload_to_bytes(
@@ -328,7 +383,9 @@ pub(crate) async fn prove(
     let data = data.map(Arc::new);
     let data_resolver = data.clone();
     let v3_policy = v3_policy.get_ref().clone();
-    let (_id, updates) = pool
+    let mut cancel_on_drop = CancelOnDrop::new();
+    let proof_cancel = cancel_on_drop.token.clone();
+    let (id, updates) = pool
         .submit_and_subscribe(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -379,6 +436,7 @@ pub(crate) async fn prove(
                             &proving_data.ir_source,
                             &resolver,
                             v3_policy.as_ref(),
+                            Some(&proof_cancel),
                         )
                         .await?
                         .0;
@@ -396,8 +454,10 @@ pub(crate) async fn prove(
             })
         })
         .await?;
+    cancel_on_drop.track_job(pool.get_ref().clone(), id);
     drop(permit);
-    let response = JobStatus::wait_for_success(&updates).await?;
+    let response = wait_for_proof_job(&pool, id, &updates, &cancel_on_drop.token).await?;
+    cancel_on_drop.disarm_job();
 
     Ok(HttpResponse::Ok().body(response))
 }
