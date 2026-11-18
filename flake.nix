@@ -328,6 +328,7 @@
               packages.onchain-runtime-wasm
               packages.ledger-wasm
               packages.zkir-wasm
+              zkir-v3.packages.${system}.zkir-wasm
             ];
           };
 
