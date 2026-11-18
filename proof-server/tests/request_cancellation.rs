@@ -8,7 +8,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use ledger::structure::{ProofPreimageVersioned, ProofVersioned};
+use ledger::structure::ProofPreimageVersioned;
+#[cfg(feature = "native-memory")]
+use ledger::structure::ProofVersioned;
 use midnight_proof_server::worker_pool::{JobStatus, WorkerPool};
 use midnight_proof_server::{ServerConfig, server, server_with_config};
 use serialize::{tagged_deserialize, tagged_serialize};
