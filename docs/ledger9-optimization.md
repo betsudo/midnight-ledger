@@ -47,7 +47,7 @@ proof test is not part of ordinary hosted CI.
 
 ## Request path
 
-1. Proof-server admission bounds simultaneous body reads and decoded jobs before the worker queue. A queued job can be cancelled; its transition to running is exclusive with cancellation.
+1. Proof-server admission bounds simultaneous body reads and decoded jobs before the worker queue. Cancelling a queued job immediately releases its captured body and queue slot; its transition to running is exclusive with cancellation.
 2. The server derives a V3 `ProverConfig` from `--v3-memory-policy` (`heap`, `mapped-key`, or `mapped-key-and-cosets`). The default is `heap`. `--v3-coset-spill-floor-k` defaults to 18, and `--v3-spill-dir` selects the temporary volume.
 3. `transient-crypto` loads universal parameters under `ParamsLoadPolicy`. `MIDNIGHT_MMAP_BUILD` and `MIDNIGHT_LAZY_PARAMS` remain legacy process-policy inputs. A policy-aware provider receives explicit `lazy_params`; a provider that cannot honor a requested lazy load returns `Unsupported`.
 4. The mapped SRS companion is a trusted, immutable, read-only file in the operator-selected directory. A private temporary file is validated and then atomically published. A miss follows the selected load policy. Treat this directory as a trust boundary.
@@ -74,8 +74,10 @@ the V3 forwarding API lives in
 
 Build the native proof server with its opt-in `native-memory` feature
 before selecting mapped storage. The default CLI policy is `heap`;
-feature-enabled binaries still use the released compatibility path unless
-an operator selects a mapped V3 policy.
+feature-enabled binaries still use heap storage unless an operator selects a
+mapped V3 policy. HTTP V3 proving always carries a request-owned cancellation
+token through the context entry point; internal callers retain the released
+compatibility entry point when they supply neither policy nor token.
 
 | CLI option | Default | Meaning |
 | --- | --- | --- |
@@ -87,6 +89,7 @@ an operator selects a mapped V3 policy.
 | `--max-ingress` | 2 | Simultaneous body readers/decoders |
 | `--job-capacity` | 10 | Pending work closures retained by the queue |
 | `--num-workers` | 2 | Proof workers |
+| `--abort-half-closed-clients` | Off | Abort HTTP/1 proof handlers when a client closes its write side; clients that intentionally half-close must leave this off |
 
 The matching `MIDNIGHT_PROOF_SERVER_*` environment variables are defined
 in [`proof-server/src/main.rs`](../proof-server/src/main.rs). For example,
@@ -98,7 +101,12 @@ use heap behavior.
 
 `--trusted-mmap-dir` controls the universal-parameter companion directory separately from `--v3-spill-dir`, which controls temporary mapped key and coset files. The server rejects a spill directory with `heap` policy. Native mapped storage requires a native target and the `native-memory` build feature; Wasm remains on heap behavior even if that feature is enabled.
 
-Queue capacity counts closures still held by the work channel, including jobs whose status records were cancelled or expired. A worker releases a slot when it dequeues and drops the work item; garbage collection alone cannot admit replacement bodies while old queued work still retains memory. The configured ingress limit independently caps simultaneous body readers. Set both limits for the expected proof-server load; capacity `0` retains the explicit unlimited-queue mode.
+Queue capacity counts pending closures that retain a decoded request body.
+The channel holds only job IDs. A worker claim, pending cancellation, or
+expiration releases the slot under the same admission lock; the body is
+dropped outside that lock. The configured ingress limit independently caps
+simultaneous body readers. Set both limits for the expected proof-server load;
+capacity `0` retains the explicit unlimited-queue mode.
 
 The body size and read timeout are enforced while holding the ingress
 permit. A saturated queue or ingress gate responds with HTTP 429 before
@@ -127,8 +135,13 @@ An explicit lazy request to a provider that cannot honor it returns
 as an error rather than silently allocating a potentially large heap
 substitute. V3 cancellation is request-local and cooperative at key
 admission and prover phase checkpoints. It cannot undo a partially written
-transcript. The default API, released proof/key encodings, and V2 route
-remain compatible.
+transcript. The handler applies the configured job timeout to its response
+wait, cancels its own token, and returns HTTP 408 on expiry. The default HTTP/1
+half-close behavior preserves clients that finish writing a request and then
+wait for the response. `--abort-half-closed-clients` opts into disconnect-driven
+handler abort for those connections. The default API, released proof/key
+encodings, and V2 route remain compatible. V2 can discard queued work, but its
+running prover does not consume the V3 cancellation token.
 
 ## Delivery gates
 

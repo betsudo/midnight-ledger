@@ -50,6 +50,25 @@ impl Default for IngressConfig {
     }
 }
 
+/// HTTP transport policy. Disabling half-closed HTTP/1 connections lets
+/// Actix drop a pending handler when the client closes its write side.
+#[derive(Clone)]
+pub struct ServerConfig {
+    pub ingress: IngressConfig,
+    pub v3_policy: Option<ProverConfig>,
+    pub allow_half_closed_clients: bool,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            ingress: IngressConfig::default(),
+            v3_policy: None,
+            allow_half_closed_clients: true,
+        }
+    }
+}
+
 pub(crate) struct IngressState {
     pub config: IngressConfig,
     pub permits: Arc<Semaphore>,
@@ -77,6 +96,26 @@ pub fn server_with_proving_config(
     ingress_config: IngressConfig,
     v3_policy: Option<ProverConfig>,
 ) -> std::io::Result<(Server, u16)> {
+    server_with_config(
+        port,
+        fetch_params,
+        pool,
+        ServerConfig {
+            ingress: ingress_config,
+            v3_policy,
+            ..ServerConfig::default()
+        },
+    )
+}
+
+pub fn server_with_config(
+    port: u16,
+    fetch_params: bool,
+    pool: WorkerPool,
+    config: ServerConfig,
+) -> std::io::Result<(Server, u16)> {
+    let ingress_config = config.ingress;
+    let v3_policy = config.v3_policy;
     if ingress_config.max_body_bytes == 0
         || ingress_config.max_inflight == 0
         || ingress_config.read_timeout.is_zero()
@@ -116,6 +155,7 @@ pub fn server_with_proving_config(
             app
         }
     })
+    .h1_allow_half_closed(config.allow_half_closed_clients)
     .bind(("0.0.0.0", port))?;
     let port = http_server.addrs()[0].port();
     let srv = http_server.run();

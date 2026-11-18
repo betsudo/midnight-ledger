@@ -16,8 +16,8 @@ use actix_web::error::{
 };
 use async_channel::{Receiver, RecvError, Sender, bounded, unbounded};
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, SystemTime};
 use thiserror::Error;
 use tokio::{sync::Mutex, task};
@@ -99,26 +99,31 @@ impl JobStatus {
     }
 }
 
+type Work = Box<dyn FnOnce() -> Result<Vec<u8>, WorkError> + Send + 'static>;
+
 pub struct WorkItem {
     id: Uuid,
-    work: Box<dyn FnOnce() -> Result<Vec<u8>, WorkError> + Send + 'static>,
 }
 
 #[derive(Clone)]
 pub struct Job {
     status: JobStatus,
+    // The channel holds only an ID. Cancelling a pending request can drop its
+    // captured body immediately, even while another worker is occupied.
+    work: Arc<StdMutex<Option<Work>>>,
     update_sender: Sender<JobStatus>,
     update_receiver: Arc<Receiver<JobStatus>>,
     timeout: SystemTime,
 }
 
 impl Job {
-    fn new(ttl: Duration) -> Self {
+    fn new(ttl: Duration, work: Work) -> Self {
         let (update_sender, receiver) = unbounded();
         Self {
             update_sender,
             update_receiver: Arc::new(receiver),
             status: JobStatus::Pending,
+            work: Arc::new(StdMutex::new(Some(work))),
             timeout: SystemTime::now() + ttl,
         }
     }
@@ -133,8 +138,7 @@ pub struct Requests {
     pub capacity: usize,
     job_ttl: Duration,
     reqs: Arc<Mutex<HashMap<Uuid, Job>>>,
-    // Counts actual queued closures, including cancelled or expired jobs
-    // whose captured input has not yet been dropped by a worker.
+    // Counts pending closures that still retain their captured request body.
     queued: Arc<AtomicUsize>,
 }
 
@@ -177,7 +181,10 @@ impl Requests {
         }
     }
 
-    async fn new_req(&self) -> Result<Uuid, WorkerPoolError> {
+    async fn new_req(
+        &self,
+        work: Work,
+    ) -> Result<(Uuid, Arc<Receiver<JobStatus>>), WorkerPoolError> {
         // Capacity admission must be one atomic operation. With the previous
         // `is_full().await` followed by a second lock for `insert`, a burst of
         // HTTP requests could all observe spare capacity and overfill the
@@ -186,28 +193,34 @@ impl Requests {
         if self.capacity != 0 && self.queued.load(Ordering::Acquire) >= self.capacity {
             return Err(WorkerPoolError::JobQueueFull);
         }
-        let req = Job::new(self.job_ttl);
+        let req = Job::new(self.job_ttl, work);
+        let updates = req.updates();
         let id = Uuid::new_v4();
         reqs.insert(id, req);
         self.queued.fetch_add(1, Ordering::Release);
-        Ok(id)
+        Ok((id, updates))
     }
 
     async fn get(&self, id: Uuid) -> Option<Job> {
         self.reqs.lock().await.get(&id).cloned()
     }
 
-    async fn start_processing(&self, id: Uuid) -> bool {
+    async fn try_start(&self, id: Uuid) -> Option<Work> {
         let mut reqs = self.reqs.lock().await;
-        let Some(req) = reqs.get_mut(&id) else {
-            return false;
-        };
+        let req = reqs.get_mut(&id)?;
         if !matches!(req.status, JobStatus::Pending) {
-            return false;
+            return None;
         }
+        let work = req
+            .work
+            .lock()
+            .expect("job work lock")
+            .take()
+            .expect("pending job retains its work");
         req.status = JobStatus::Processing;
-        req.update_sender.send(JobStatus::Processing).await.unwrap();
-        true
+        self.queued.fetch_sub(1, Ordering::AcqRel);
+        req.update_sender.try_send(JobStatus::Processing).unwrap();
+        Some(work)
     }
 
     async fn cancel(&self, id: Uuid) -> Result<(), WorkerPoolError> {
@@ -216,9 +229,26 @@ impl Requests {
         if !matches!(req.status, JobStatus::Pending) {
             return Err(WorkerPoolError::JobNotPending(id));
         }
+        let work = req.work.lock().expect("job work lock").take();
         req.status = JobStatus::Cancelled;
-        req.update_sender.send(JobStatus::Cancelled).await.unwrap();
+        self.queued.fetch_sub(1, Ordering::AcqRel);
+        req.update_sender.try_send(JobStatus::Cancelled).unwrap();
+        drop(reqs);
+        drop(work);
         Ok(())
+    }
+
+    async fn remove(&self, id: Uuid) {
+        let mut reqs = self.reqs.lock().await;
+        let job = reqs.remove(&id);
+        if job
+            .as_ref()
+            .is_some_and(|job| matches!(job.status, JobStatus::Pending))
+        {
+            self.queued.fetch_sub(1, Ordering::AcqRel);
+        }
+        drop(reqs);
+        drop(job);
     }
 
     async fn gc(&self) {
@@ -230,9 +260,19 @@ impl Requests {
                 keys_to_remove.push(*id);
             }
         }
-        for key in keys_to_remove {
-            reqs.remove(&key);
+        let removed: Vec<_> = keys_to_remove
+            .into_iter()
+            .filter_map(|key| reqs.remove(&key))
+            .collect();
+        let pending = removed
+            .iter()
+            .filter(|job| matches!(job.status, JobStatus::Pending))
+            .count();
+        if pending != 0 {
+            self.queued.fetch_sub(pending, Ordering::AcqRel);
         }
+        drop(reqs);
+        drop(removed);
     }
 }
 
@@ -246,6 +286,10 @@ pub struct WorkerPool {
 }
 
 impl WorkerPool {
+    pub fn job_timeout(&self) -> Duration {
+        self.requests.job_ttl
+    }
+
     /// Creates a new worker pool with the specified number of workers and channel capacity
     pub fn new(num_workers: usize, job_capacity: usize, job_timeout_secs: f64) -> Self {
         let (work_sender, work_receiver) = unbounded::<WorkItem>();
@@ -261,12 +305,10 @@ impl WorkerPool {
                 while let Ok(work) = work_receiver.recv().await {
                     // Starting work and cancelling it must compete for the
                     // same pending state under one lock.
-                    let started = requests.start_processing(work.id).await;
-                    requests.queued.fetch_sub(1, Ordering::AcqRel);
-                    if !started {
+                    let Some(job_work) = requests.try_start(work.id).await else {
                         continue;
-                    }
-                    let result = task::spawn_blocking(work.work).await;
+                    };
+                    let result = task::spawn_blocking(job_work).await;
                     match result {
                         Ok(Ok(res)) => requests.set_status(&work.id, JobStatus::Success(res)).await,
                         Ok(Err(e)) => requests.set_status(&work.id, JobStatus::Error(e)).await,
@@ -308,25 +350,26 @@ impl WorkerPool {
         }
     }
 
+    async fn enqueue(
+        &self,
+        work: Work,
+    ) -> Result<(Uuid, Arc<Receiver<JobStatus>>), WorkerPoolError> {
+        let (id, updates) = self.requests.new_req(work).await?;
+        // No suspension follows admission on the successful path: a dropped
+        // handler cannot leave an untracked queued job behind.
+        if self.sender.try_send(WorkItem { id }).is_err() {
+            self.requests.remove(id).await;
+            return Err(WorkerPoolError::ChannelClosed);
+        }
+        Ok((id, updates))
+    }
+
     /// Submits a work item to the pool
     pub async fn submit<F>(&self, work: F) -> Result<Uuid, WorkerPoolError>
     where
         F: FnOnce() -> Result<Vec<u8>, WorkError> + Send + 'static,
     {
-        let id = self.requests.new_req().await?;
-        if self
-            .sender
-            .send(WorkItem {
-                id,
-                work: Box::new(work),
-            })
-            .await
-            .is_err()
-        {
-            self.requests.queued.fetch_sub(1, Ordering::AcqRel);
-            self.requests.reqs.lock().await.remove(&id);
-            return Err(WorkerPoolError::ChannelClosed);
-        }
+        let (id, _) = self.enqueue(Box::new(work)).await?;
         Ok(id)
     }
 
@@ -339,8 +382,7 @@ impl WorkerPool {
     where
         F: FnOnce() -> Result<Vec<u8>, WorkError> + Send + 'static,
     {
-        let id = self.submit(work).await?;
-        Ok((id, self.subscribe(id).await.unwrap()))
+        self.enqueue(Box::new(work)).await
     }
 
     /// Receives the result of a completed work item
@@ -393,6 +435,14 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
+
+    struct DropProbe(Arc<AtomicBool>);
+
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
 
     #[tokio::test]
     async fn test_worker_pool_basic() {
@@ -492,15 +542,15 @@ mod tests {
     async fn cancellation_and_start_cannot_both_succeed() {
         for start_first in [true, false] {
             let requests = Requests::new(1, Duration::from_secs(1));
-            let id = requests.new_req().await.unwrap();
+            let (id, _) = requests.new_req(Box::new(|| Ok(vec![]))).await.unwrap();
             let (started, cancelled) = if start_first {
-                tokio::join!(requests.start_processing(id), requests.cancel(id))
+                tokio::join!(requests.try_start(id), requests.cancel(id))
             } else {
                 let (cancelled, started) =
-                    tokio::join!(requests.cancel(id), requests.start_processing(id));
+                    tokio::join!(requests.cancel(id), requests.try_start(id));
                 (started, cancelled)
             };
-            match (started, cancelled) {
+            match (started.is_some(), cancelled) {
                 (true, Err(WorkerPoolError::JobNotPending(error_id))) => {
                     assert_eq!(error_id, id);
                     assert!(matches!(
@@ -621,7 +671,7 @@ mod tests {
             let barrier = Arc::clone(&barrier);
             tokio::spawn(async move {
                 barrier.wait().await;
-                requests.new_req().await
+                requests.new_req(Box::new(|| Ok(vec![]))).await
             })
         });
         let results = futures::future::join_all(attempts).await;
@@ -635,7 +685,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn expired_queued_work_still_occupies_capacity() {
+    async fn expired_queued_work_releases_capacity_and_captured_body() {
         let pool = WorkerPool::new(1, 1, 0.05);
         let (release_first, first_released) = std::sync::mpsc::channel();
         let (_, first_updates) = pool
@@ -651,9 +701,9 @@ mod tests {
         ));
 
         let retained = Arc::new(AtomicBool::new(false));
-        let retained_in_work = retained.clone();
+        let captured = DropProbe(retained.clone());
         pool.submit(move || {
-            retained_in_work.store(true, Ordering::SeqCst);
+            drop(captured);
             Ok(vec![])
         })
         .await
@@ -661,14 +711,47 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(60)).await;
         pool.requests.gc().await;
         assert_eq!(pool.requests.pending_count().await, 0);
-        assert_eq!(pool.requests.queued.load(Ordering::Acquire), 1);
-        assert!(matches!(
-            pool.submit(|| Ok(vec![])).await,
-            Err(WorkerPoolError::JobQueueFull)
-        ));
+        assert_eq!(pool.requests.queued.load(Ordering::Acquire), 0);
+        assert!(retained.load(Ordering::SeqCst));
+        pool.submit(|| Ok(vec![])).await.expect("freed queue slot");
 
         release_first.send(()).unwrap();
         pool.shutdown().await;
-        assert!(!retained.load(Ordering::SeqCst));
+        assert!(retained.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn cancelling_queued_work_releases_body_and_capacity_immediately() {
+        let pool = WorkerPool::new(1, 1, 5.0);
+        let (release_first, first_released) = std::sync::mpsc::channel();
+        let (_, first_updates) = pool
+            .submit_and_subscribe(move || {
+                first_released.recv().unwrap();
+                Ok(vec![])
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            first_updates.recv().await,
+            Ok(JobStatus::Processing)
+        ));
+
+        let released = Arc::new(AtomicBool::new(false));
+        let captured = DropProbe(released.clone());
+        let (id, updates) = pool
+            .submit_and_subscribe(move || {
+                drop(captured);
+                Ok(vec![])
+            })
+            .await
+            .unwrap();
+        pool.cancel(id).await.unwrap();
+        assert!(released.load(Ordering::SeqCst));
+        assert_eq!(pool.requests.queued.load(Ordering::Acquire), 0);
+        assert!(matches!(updates.recv().await, Ok(JobStatus::Cancelled)));
+        pool.submit(|| Ok(vec![])).await.expect("freed queue slot");
+
+        release_first.send(()).unwrap();
+        pool.shutdown().await;
     }
 }

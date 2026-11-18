@@ -14,7 +14,7 @@
 use std::sync::Arc;
 
 use ledger::prove::Resolver;
-use midnight_proofs::config::{ProverConfig, ProverContext};
+use midnight_proofs::config::{CancelToken, ProverConfig, ProverContext};
 use midnight_proofs::plonk::{MappedKeyStorageFailure, ProveWithPolicyError};
 use rand::rngs::OsRng;
 #[allow(unused_imports)]
@@ -56,21 +56,24 @@ async fn prove_v3(
     params: &impl ParamsProverProvider,
     resolver: &impl ResolverT,
     v3_policy: Option<&ProverConfig>,
+    cancel: Option<&CancelToken>,
 ) -> Result<(Proof, Vec<Option<usize>>), WorkError> {
-    // Keep the compatibility route for the default server. An
-    // operator-selected V3 policy belongs to this request's context.
-    match v3_policy {
-        Some(policy) => {
-            let context = ProverContext::new(policy.clone());
-            ppi.prove_with_context::<zkir_v3::IrSource>(OsRng, params, resolver, &context)
-                .await
+    // The HTTP route supplies a request-owned cancellation token even with
+    // the default heap policy. Internal callers with neither option retain
+    // the released compatibility entry point.
+    let result = if v3_policy.is_some() || cancel.is_some() {
+        let policy = v3_policy.cloned().unwrap_or_else(ProverConfig::heap);
+        let mut context = ProverContext::new(policy);
+        if let Some(cancel) = cancel {
+            context = context.with_cancel(cancel.clone());
         }
-        None => {
-            ppi.prove::<zkir_v3::IrSource>(OsRng, params, resolver)
-                .await
-        }
-    }
-    .map_err(classify_proving_error)
+        ppi.prove_with_context::<zkir_v3::IrSource>(OsRng, params, resolver, &context)
+            .await
+    } else {
+        ppi.prove::<zkir_v3::IrSource>(OsRng, params, resolver)
+            .await
+    };
+    result.map_err(classify_proving_error)
 }
 
 pub(crate) fn k(request: &[u8]) -> Result<u8, String> {
@@ -111,6 +114,7 @@ pub(crate) async fn prove(
     ir_source: &[u8],
     resolver: &Resolver,
     v3_policy: Option<&ProverConfig>,
+    cancel: Option<&CancelToken>,
 ) -> Result<(Proof, Vec<Option<usize>>), WorkError> {
     let tag = peek_tag(&mut std::io::Cursor::new(ir_source))
         .map_err(|e| WorkError::BadInput(e.to_string()))?;
@@ -137,7 +141,9 @@ pub(crate) async fn prove(
                 .map_err(|e| WorkError::BadInput(e.to_string()))?;
             Ok((proof, skips))
         }
-        "ir-source[v3-generic]" => prove_v3(&ppi, &*PUBLIC_PARAMS, resolver, v3_policy).await,
+        "ir-source[v3-generic]" => {
+            prove_v3(&ppi, &*PUBLIC_PARAMS, resolver, v3_policy, cancel).await
+        }
         _ => Err(WorkError::BadInput(format!(
             "Unsupported ZKIR tag: '{tag}'"
         ))),
@@ -209,15 +215,19 @@ mod tests {
             .to_vec(),
             ir_source,
         });
-        prove_v3(&preimage, &params, &resolver, None)
+        prove_v3(&preimage, &params, &resolver, None, None)
             .await
             .expect("default V3 proof uses released heap path");
+        let request_cancel = CancelToken::new();
+        prove_v3(&preimage, &params, &resolver, None, Some(&request_cancel))
+            .await
+            .expect("request cancellation context preserves released heap proof path");
 
         let root = tempfile::tempdir().expect("private test directory");
         let mut mapped = ProverConfig::mapped_key_and_cosets();
         mapped.coset_spill_floor_k = 0;
         mapped.spill_dir = Some(root.path().join("missing"));
-        let storage_failure = prove_v3(&preimage, &params, &resolver, Some(&mapped))
+        let storage_failure = prove_v3(&preimage, &params, &resolver, Some(&mapped), None)
             .await
             .expect_err("mapped policy must reach unavailable storage");
         assert!(matches!(storage_failure, WorkError::ServerEnvironment(_)));
@@ -242,6 +252,7 @@ mod tests {
             &params,
             &FixtureResolver(malformed),
             Some(&mapped),
+            None,
         )
         .await
         .expect_err("malformed supplied key must fail");
